@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <!-- 真实窗口的流式 CPU 测量（NativeAOT 发布后运行，见 tools/cpu-bench.sh） -->
+    <PropertyGroup>
+        <OutputType>WinExe</OutputType>
+        <IsPackable>false</IsPackable>
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+        <PublishAot>true</PublishAot>
+        <!-- 保留符号，便于用 sample / perf 看调用栈 -->
+        <StripSymbols>false</StripSymbols>
+    </PropertyGroup>
+    <ItemGroup>
+        <PackageReference Include="Avalonia.Desktop" />
+        <PackageReference Include="Avalonia.Themes.Fluent" />
+    </ItemGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\..\src\StreamMark.Avalonia\StreamMark.Avalonia.csproj" />
+        <ProjectReference Include="..\..\src\StreamMark.Highlighting.TextMate\StreamMark.Highlighting.TextMate.csproj" />
+    </ItemGroup>
+    <ItemGroup>
+        <EmbeddedResource Include="Samples\chat.md" LogicalName="chat.md" />
+    </ItemGroup>
+</Project>

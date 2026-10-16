@@ -17,6 +17,22 @@ public sealed class StreamPacerTests
     }
 
     [Fact]
+    public void AfterIdleGap_FirstTick_DoesNotDumpBacklog()
+    {
+        var pacer = new StreamPacer();
+        pacer.Push("hello", Ms(0));
+        for (var t = 16; pacer.Backlog > 0 && t < 2000; t += 16)
+        {
+            pacer.Tick(Ms(t));
+        }
+        Assert.Equal(0, pacer.Backlog);
+        // 5 秒空闲后到达一大段：下一帧只放出一部分
+        pacer.Push(new string('a', 300), Ms(5000));
+        var first = pacer.Tick(Ms(5016));
+        Assert.InRange(first.Length, 1, 299);
+    }
+
+    [Fact]
     public void NoCharacter_WaitsLongerThanMaxLag()
     {
         var pacer = new StreamPacer();

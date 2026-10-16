@@ -33,6 +33,8 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
         public TranscriptEntry Entry { get; } = entry;
         public DocumentSnapshot? Applied;
         public RenderContext? Context;
+        // 上次按其刷新已实例化视图的上下文：快照与上下文都没变的条目每帧直接跳过
+        public RenderContext? RefreshedContext;
         public readonly List<Row> Rows = [];
         // 每个顶层块占用的行数（超长代码块拆成多行），与快照中的块一一对应
         public readonly List<int> Slots = [];
@@ -50,6 +52,8 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
         public double Height;
         public bool Measured;
         public double Top;
+        // 在 _rows 中的位置（EnsureRows 时更新；行结构变化后到下一次 EnsureRows 之前可能过期）
+        public int Index;
     }
 
     private const double Overscan = 600;
@@ -62,6 +66,11 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
     private IReadOnlyList<TranscriptEntry> _source = [];
     private bool _rowsDirty = true;
     private bool _topsDirty = true;
+    // 需要重新计算 Top 的第一行：流式时只有末尾几行变化，不必重算整个会话
+    private int _topsDirtyFrom;
+    private readonly HashSet<Row> _keep = [];
+    private readonly List<Row> _unrealize = [];
+    private (Size Extent, Size Viewport, Vector Offset) _lastScrollInfo;
     private bool _frameRequested;
     private MarkdownStyle? _style;
     private MarkdownServices? _services;
@@ -369,6 +378,7 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
 
     private void ApplyAll()
     {
+        var top = TopLevel.GetTopLevel(this);
         for (var i = 0; i < _entries.Count; i++)
         {
             var state = _entries[i];
@@ -376,8 +386,13 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
             {
                 continue;
             }
+            markdown.Stream?.SetFrameSource(top);
             var context = ContextFor(i, state);
             var latest = markdown.Document.Latest;
+            if (ReferenceEquals(latest, state.Applied) && ReferenceEquals(context, state.RefreshedContext) && state.Rows.Count > 0 && state.Rows[0].Block is not null)
+            {
+                continue;
+            }
             if (state.Rows.Count > 0 && state.Rows[0].Block is null)
             {
                 // 按需解析的条目刚解析完：去掉估算高度的占位行，按快照重建
@@ -391,6 +406,7 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
             if (ReferenceEquals(latest, state.Applied) && !contextChanged)
             {
                 RefreshRealizedContexts(state, context);
+                state.RefreshedContext = context;
                 continue;
             }
             CaptureAnchor();
@@ -435,6 +451,12 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
             }
             state.Applied = latest;
             RefreshRealizedContexts(state, context);
+            state.RefreshedContext = context;
+            // 流结束后光标要消失：末尾片段的内容可能没变，单独重绘（只是它自己的小块绘制）
+            if (latest.IsComplete)
+            {
+                _tail?.InvalidateVisual();
+            }
         }
     }
 
@@ -566,7 +588,7 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
         {
             _rowsDirty = true;
         }
-        _topsDirty = true;
+        MarkTopsDirty(state.Rows.Count > rowStart ? state.Rows[rowStart] : null);
     }
 
     // 代码块展开 / 折叠：按新的分段数重建该块的行
@@ -661,7 +683,7 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
             Children.Add(replacement);
         }
         row.Measured = false;
-        _topsDirty = true;
+        MarkTopsDirty(row);
     }
 
     private double Estimate(Row row, RenderContext context)
@@ -723,7 +745,19 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
             }
             _rows.AddRange(state.Rows);
         }
+        for (var i = 0; i < _rows.Count; i++)
+        {
+            _rows[i].Index = i;
+        }
         _rowsDirty = false;
+        MarkTopsDirty(null);
+    }
+
+    // 从这一行起重新计算 Top（null 或行结构已变化时从头计算）
+    private void MarkTopsDirty(Row? row)
+    {
+        var index = row is null || _rowsDirty || row.Index >= _rows.Count || !ReferenceEquals(_rows[row.Index], row) ? 0 : row.Index;
+        _topsDirtyFrom = _topsDirty ? Math.Min(_topsDirtyFrom, index) : index;
         _topsDirty = true;
     }
 
@@ -733,9 +767,10 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
         {
             return;
         }
-        double y = 0;
         var spacing = _style?.BlockSpacing ?? 12;
-        for (var i = 0; i < _rows.Count; i++)
+        var from = Math.Clamp(_topsDirtyFrom, 0, _rows.Count);
+        var y = from > 0 ? _rows[from - 1].Top + _rows[from - 1].Height : 0;
+        for (var i = from; i < _rows.Count; i++)
         {
             if (i > 0)
             {
@@ -832,7 +867,7 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
             {
                 row.Measured = false;
             }
-            _topsDirty = true;
+            MarkTopsDirty(null);
         }
         _style ??= MarkdownStyle.Resolve(this);
         EnsureRows();
@@ -855,8 +890,9 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
                 }
                 var top = Math.Max(0, _offset.Y - Overscan);
                 var bottom = _offset.Y + height + Overscan;
-                var changed = false;
-                var keep = new HashSet<Row>();
+                Row? changed = null;
+                var keep = _keep;
+                keep.Clear();
                 for (var i = FirstRowAt(top); i < _rows.Count && _rows[i].Top <= bottom; i++)
                 {
                     var row = _rows[i];
@@ -877,18 +913,26 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
                     if (Math.Abs(measured - row.Height) > 0.5)
                     {
                         row.Height = measured;
-                        changed = true;
+                        changed ??= row;
                     }
                 }
-                foreach (var row in _realized.Where(r => !keep.Contains(r)).ToList())
+                _unrealize.Clear();
+                foreach (var row in _realized)
+                {
+                    if (!keep.Contains(row))
+                    {
+                        _unrealize.Add(row);
+                    }
+                }
+                foreach (var row in _unrealize)
                 {
                     Unrealize(row);
                 }
-                if (!changed)
+                if (changed is null)
                 {
                     break;
                 }
-                _topsDirty = true;
+                MarkTopsDirty(changed);
                 EnsureTops();
                 if (!_pinned && anchor is not null)
                 {
@@ -915,7 +959,13 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
         _viewport = new Size(fullWidth, height);
         _extent = new Size(fullWidth, _extent.Height);
         UpdateTail();
-        ScrollInvalidated?.Invoke(this, EventArgs.Empty);
+        // 只在滚动信息变化时通知（流式时每帧都会测量）
+        var info = (_extent, _viewport, _offset);
+        if (info != _lastScrollInfo)
+        {
+            _lastScrollInfo = info;
+            ScrollInvalidated?.Invoke(this, EventArgs.Empty);
+        }
         return new Size(fullWidth, height);
     }
 

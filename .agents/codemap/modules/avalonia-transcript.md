@@ -59,7 +59,7 @@ updated: 2026-10-16
 - 虚拟化窗口：`Overscan = 600`（第 55 行），实例化区间 `[offset - 600, offset + height + 600]`（第 700-704 行）；回收 = `_realized` 中本轮未保留的行（第 727-730 行）。
 - 滚动锚定状态：`_pendingAnchor`（`PendingAnchor(Row, Delta, EntryDelta)`，第 80 行），由 `CaptureAnchor` 记录、`RestoreAnchor` 消费；用户直接改变 `Offset` 或 `SetOffsetInternal` 时清空（第 839、880 行）。
 - 贴底状态：`_pinned`（初始 `true`，第 72 行）。`Offset` setter 里 `y >= max - 2` 即视为贴底（第 838 行）；`ScrollToEnd()` 只置位（第 800 行）。
-- 其它：`_offset`、`_width`、`_rowsDirty` / `_topsDirty`、`_frameRequested`、`_settingOffset`（防止 `ScrollInvalidated` 回写重入）、`_tail`（当前渐显尾段）、`Selection` 与 `_selection`。
+- 其它：`_offset`、`_width`、`_rowsDirty` / `_topsDirty` + `_topsDirtyFrom`（只从第一处变化的行重算 `Top`；`Row.Index` 在 `EnsureRows` 时更新）、`EntryState.RefreshedContext`（快照与上下文都没变的条目每帧直接跳过）、`_lastScrollInfo`（滚动信息不变时不发 `ScrollInvalidated`）、`_frameRequested`、`_settingOffset`（防止 `ScrollInvalidated` 回写重入）、`_tail`（当前渐显尾段）、`Selection` 与 `_selection`。
 
 ## Contracts it exposes
 - `TranscriptView.Entries`：`ObservableCollection<TranscriptEntry>`，可直接 `Add` / `Insert(0, …)` / `Remove`（测试中就这么用，`DeferredEntryTests.cs:82`）。面板监听 `CollectionChanged`（`SetEntries` 第 133-146 行），并把集合按 `IReadOnlyList` 保存；条目按**引用**身份复用状态（`TranscriptEntry` 未重写 `Equals`），因此同一个条目对象从集合里移除再放回会丢失 `EntryState`（挂起的快照订阅被退订、块状态清空）。

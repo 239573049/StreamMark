@@ -19,7 +19,11 @@ public sealed class MarkdownEntry : TranscriptEntry
     /// <summary>流式消息：经节奏控制器平滑，带渐显与光标。</summary>
     public MarkdownEntry(MarkdownStream stream) : this(stream.Document, stream.State)
     {
+        Stream = stream;
     }
+
+    /// <summary>流式消息的节奏控制器（会话面板把显示帧来源交给它）。</summary>
+    public MarkdownStream? Stream { get; }
 
     /// <summary>静态消息。<paramref name="profile"/> 应与宿主的插件匹配（<c>MarkdownServices.Profile</c>）。</summary>
     public static MarkdownEntry FromText(string markdown, MarkdownProfile? profile = null, object? tag = null)

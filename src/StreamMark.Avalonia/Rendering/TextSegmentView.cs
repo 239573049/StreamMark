@@ -27,7 +27,12 @@ public sealed class TextSegmentView : Control, ISelectableSegment
     private TextAlignment _alignment = TextAlignment.Left;
     private TextWrapping _wrapping = TextWrapping.Wrap;
 
-    private TextLayout? _layout;
+    private SegmentLayout? _layout;
+    // 内容变化后需要重新排版的起点（int.MaxValue 表示排版有效）
+    private int _dirtyFrom = int.MaxValue;
+    private readonly List<SegmentLineVisual> _lines = [];
+    private readonly TailFade _fade;
+    private bool _isDocumentTail;
 #pragma warning disable CS0618 // TextRunCache 是 Avalonia 12 的预览 API（[Unstable]），只在这里使用
     // 已整形文本段的缓存：流式追加时只为变化处之后的文本重新整形
     private readonly TextRunCache _runCache = new();
@@ -35,21 +40,37 @@ public sealed class TextSegmentView : Control, ISelectableSegment
 
     /// <summary>是否使用整形缓存（测试与基准对比用）。</summary>
     internal static bool UseRunCache { get; set; } = true;
-    private double _layoutWidth = double.NaN;
     private int _hoverLink = -1;
     private bool _hoverClickable;
-    private bool _frameRequested;
 
     public TextSegmentView()
     {
         ClipToBounds = false;
+        _fade = new TailFade(this);
     }
 
     /// <summary>片段身份（选区坐标）。</summary>
     public SegmentKey Key { get; private set; }
 
     /// <summary>是否是文档最后一个片段（流式时绘制渐显和光标）。</summary>
-    public bool IsDocumentTail { get; set; }
+    public bool IsDocumentTail
+    {
+        get => _isDocumentTail;
+        set
+        {
+            if (_isDocumentTail == value)
+            {
+                return;
+            }
+            _isDocumentTail = value;
+            InvalidateVisual();
+            // 不再是末尾时，正在渐显的文字继续渐显完（到时由定时器结束）
+            if (value)
+            {
+                RefreshFade();
+            }
+        }
+    }
 
     public InlineContent Content => _content;
 
@@ -57,7 +78,8 @@ public sealed class TextSegmentView : Control, ISelectableSegment
 
     Control ISelectableSegment.View => this;
 
-    public TextLayout? Layout => _layout;
+    /// <summary>当前排版（逐行）。</summary>
+    public SegmentLayout? Layout => _layout;
 
     /// <summary>链接点击（冒泡）。</summary>
     public static readonly RoutedEvent<LinkClickedEventArgs> LinkClickedEvent =
@@ -178,6 +200,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
             _runCache.InvalidateFrom(paragraphStart);
         }
 #pragma warning restore CS0618
+        var restyled = _alignment != alignment || _wrapping != wrapping;
         _context = context;
         _content = content;
         _fontSize = fontSize;
@@ -185,7 +208,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
         _foreground = foreground;
         _alignment = alignment;
         _wrapping = wrapping;
-        InvalidateLayout();
+        InvalidateLayout(restyled ? 0 : from);
     }
 
     private bool IsAttached => VisualRoot is not null;
@@ -224,13 +247,11 @@ public sealed class TextSegmentView : Control, ISelectableSegment
         return limit;
     }
 
-    private void InvalidateLayout()
+    // 从 from 处起重新排版（0 = 整段）；只有变化的行会重新录制
+    private void InvalidateLayout(int from = 0)
     {
-        _layout?.Dispose();
-        _layout = null;
-        _layoutWidth = double.NaN;
+        _dirtyFrom = Math.Min(_dirtyFrom, Math.Max(0, from));
         InvalidateMeasure();
-        InvalidateVisual();
     }
 
     protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
@@ -251,6 +272,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
         }
         _cardTimer?.Stop();
         CloseCard();
+        _fade.Detach();
         // 归还图片句柄；重新挂载时排版会重新取得（通常命中内存缓存）
         if (_images.Count > 0)
         {
@@ -285,78 +307,113 @@ public sealed class TextSegmentView : Control, ISelectableSegment
         {
             EnsureLayout(finalSize.Width);
         }
+        if (IsDocumentTail)
+        {
+            RefreshFade();
+        }
         return finalSize;
     }
 
-    private TextLayout? EnsureLayout(double width)
+    private SegmentLayout? EnsureLayout(double width)
     {
         if (_context is null)
         {
             return null;
         }
         var maxWidth = _wrapping == TextWrapping.Wrap && double.IsFinite(width) ? Math.Max(width, 1) : double.PositiveInfinity;
-        if (_layout is not null && (_layoutWidth.Equals(maxWidth) || _wrapping == TextWrapping.NoWrap))
+        var widthChanged = _layout is null || !_layout.MaxWidth.Equals(maxWidth);
+        if (_layout is not null && _dirtyFrom == int.MaxValue && (!widthChanged || _wrapping == TextWrapping.NoWrap))
         {
             return _layout;
         }
         // 图片按可用宽度缩放：宽度变化时缓存的图片 run 失效
-        if (!_runCacheWidth.Equals(maxWidth) && HasWidthDependentObjects())
+        if (widthChanged && !_runCacheWidth.Equals(maxWidth) && HasWidthDependentObjects())
         {
 #pragma warning disable CS0618
             _runCache.Invalidate();
 #pragma warning restore CS0618
             _fullRebuild = true;
         }
-        _layout?.Dispose();
-        _usedImages.Clear();
-        var source = new InlineTextSource(this, _context, _content, _fontSize, _fontWeight, _foreground ?? _context.Style.Foreground, maxWidth);
-        var paragraph = new GenericTextParagraphProperties(source.DefaultProperties, _alignment, _wrapping,
-            lineHeight: _context.Style.LineHeight * (_fontSize / _context.Style.FontSize));
-#pragma warning disable CS0618
-        _layout = new TextLayout(source, paragraph, maxWidth: maxWidth, textRunCache: UseRunCache ? _runCache : null);
-        // 固定行高会把整行裁到该高度：行内有更高的对象（图片、大公式）时改用自然行高重新排版
-        if (HasOverflowingObjects(_layout))
+        var from = widthChanged && _wrapping == TextWrapping.Wrap ? 0 : _dirtyFrom == int.MaxValue ? 0 : _dirtyFrom;
+        if (from == 0)
         {
-            _layout.Dispose();
-            paragraph = new GenericTextParagraphProperties(source.DefaultProperties, _alignment, _wrapping);
-            _layout = new TextLayout(source, paragraph, maxWidth: maxWidth, textRunCache: UseRunCache ? _runCache : null);
+            _usedImages.Clear();
         }
+        var source = new InlineTextSource(this, _context, _content, _fontSize, _fontWeight, _foreground ?? _context.Style.Foreground, maxWidth);
+        var fixedHeight = new GenericTextParagraphProperties(source.DefaultProperties, _alignment, _wrapping,
+            lineHeight: _context.Style.LineHeight * (_fontSize / _context.Style.FontSize));
+        var natural = new GenericTextParagraphProperties(source.DefaultProperties, _alignment, _wrapping);
+        _layout ??= new SegmentLayout();
+#pragma warning disable CS0618
+        var changed = _layout.Format(source, _content.Text.Length, maxWidth, fixedHeight, natural, from, UseRunCache ? _runCache : null);
 #pragma warning restore CS0618
-        _layoutWidth = maxWidth;
+        _dirtyFrom = int.MaxValue;
         // 只有所有 run 都重新生成时，"本次用到的图片"才完整；部分复用缓存时不释放
-        if (_fullRebuild || !UseRunCache)
+        if (from == 0 && (_fullRebuild || !UseRunCache))
         {
             ReleaseUnusedImages();
         }
         _fullRebuild = false;
         _runCacheWidth = maxWidth;
+        SyncLines(changed);
         return _layout;
     }
+
+    // 行视觉与排版的行一一对应；changed 之前的行对象未变，不重新录制
+    private void SyncLines(int changed)
+    {
+        var layout = _layout!;
+        while (_lines.Count > layout.LineCount)
+        {
+            VisualChildren.Remove(_lines[^1]);
+            _lines.RemoveAt(_lines.Count - 1);
+        }
+        while (_lines.Count < layout.LineCount)
+        {
+            var visual = new SegmentLineVisual(this) { Index = _lines.Count };
+            _lines.Add(visual);
+            VisualChildren.Add(visual);
+        }
+        for (var i = Math.Min(changed, _lines.Count); i < _lines.Count; i++)
+        {
+            var line = layout.LineAt(i);
+            _lines[i].Index = i;
+            _lines[i].SetBounds(new Rect(0, layout.LineTop(i), Math.Max(1, line.Start + line.WidthIncludingTrailingWhitespace), line.Height));
+            _lines[i].InvalidateVisual();
+        }
+    }
+
+    /// <summary>行视觉的绘制：文字（渐显中的部分裁掉）与删除线。</summary>
+    internal void RenderLine(DrawingContext context, int index, double? clipRight)
+    {
+        if (_layout is not { } layout || index >= layout.LineCount || layout.IsEmptyLine(index))
+        {
+            return;
+        }
+        var line = layout.LineAt(index);
+        if (clipRight is { } right)
+        {
+            using (context.PushClip(new Rect(-10000, -line.Height, right + 10000, line.Height * 3)))
+            {
+                line.Draw(context, default);
+            }
+        }
+        else
+        {
+            line.Draw(context, default);
+        }
+        DrawStrikethrough(context, layout, index);
+    }
+
+    /// <summary>重新计算末尾渐显（排版、末尾状态变化或渐显结束时）。</summary>
+    internal void RefreshFade() =>
+        _fade.Update(_layout, _lines, IsDocumentTail ? _context?.Streaming : null, _content.Text.Length, _fontSize, Bounds.Size);
 
     // 已整形 run 缓存是否整体失效（下一次排版会对每个 run 调用 GetTextRun）
     private bool _fullRebuild = true;
 
     // 缓存中的 run 按哪个可用宽度生成
     private double _runCacheWidth = double.NaN;
-
-    private bool HasOverflowingObjects(TextLayout layout)
-    {
-        if (_content.Objects.Length == 0)
-        {
-            return false;
-        }
-        foreach (var line in layout.TextLines)
-        {
-            foreach (var run in line.TextRuns)
-            {
-                if (run is DrawableTextRun drawable && drawable.Size.Height > line.Height + 0.5)
-                {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
 
     private bool HasWidthDependentObjects()
     {
@@ -449,6 +506,8 @@ public sealed class TextSegmentView : Control, ISelectableSegment
         {
             return;
         }
+        // 文字由各行视觉绘制；这里只画可命中区域、选区 / 查找高亮（在文字下方）与流式光标
+        context.FillRectangle(Brushes.Transparent, new Rect(Bounds.Size));
 
         foreach (var (start, end, current) in _context.Selection.GetHighlights(Key, _content.Text.Length))
         {
@@ -466,21 +525,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
             }
         }
 
-        var streaming = IsDocumentTail ? _context.Streaming : null;
-        var fading = streaming is not null ? streaming.GetFadingTail(StreamClock.Now) : (0, 1.0, 1.0);
-        if (fading.Item1 > 0 && _content.Text.Length > 0)
-        {
-            DrawWithFade(context, layout, fading.Item1, fading.Item2, fading.Item3);
-            RequestNextFrame();
-        }
-        else
-        {
-            layout.Draw(context, default);
-        }
-
-        DrawStrikethrough(context, layout);
-
-        if (streaming is { IsActive: true, ShowCaret: true })
+        if (IsDocumentTail && _context.Streaming is { IsActive: true, ShowCaret: true })
         {
             var end = layout.HitTestTextPosition(_content.Text.Length);
             var height = Math.Min(end.Height, _fontSize * 1.25);
@@ -489,71 +534,26 @@ public sealed class TextSegmentView : Control, ISelectableSegment
         }
     }
 
-    private void DrawStrikethrough(DrawingContext context, TextLayout layout)
+    private void DrawStrikethrough(DrawingContext context, SegmentLayout layout, int index)
     {
         Pen? pen = null;
+        var lineStart = layout.LineStart(index);
+        var lineEnd = lineStart + layout.LineLength(index);
+        var top = layout.LineTop(index);
         foreach (var span in _content.Spans)
         {
-            if (!span.Style.HasFlag(InlineStyle.Strikethrough))
+            if (!span.Style.HasFlag(InlineStyle.Strikethrough) || span.End <= lineStart || span.Start >= lineEnd)
             {
                 continue;
             }
             pen ??= new Pen(_foreground ?? _context!.Style.Foreground, Math.Max(1, _fontSize / 14));
-            foreach (var rect in layout.HitTestTextRange(span.Start, span.Length))
+            var start = Math.Max(span.Start, lineStart);
+            foreach (var rect in layout.HitTestTextRange(start, Math.Min(span.End, lineEnd) - start))
             {
-                var y = Math.Round(rect.Top + rect.Height * 0.54) + 0.5;
+                var y = Math.Round(rect.Top - top + rect.Height * 0.54) + 0.5;
                 context.DrawLine(pen, new Point(rect.Left, y), new Point(rect.Right, y));
             }
         }
-    }
-
-    // 末尾最近出现的字符按出现时间从透明渐变到不透明：
-    // 渐显区域之外正常绘制，区域之内用不透明度蒙版再绘制一次
-    private void DrawWithFade(DrawingContext context, TextLayout layout, int count, double oldest, double newest)
-    {
-        var start = Math.Max(0, _content.Text.Length - count);
-        var first = layout.HitTestTextPosition(start);
-        var bounds = new Rect(0, 0, Math.Max(Bounds.Width, layout.WidthIncludingTrailingWhitespace) + _fontSize * 2, Math.Max(Bounds.Height, layout.Height));
-        var lineRect = new Rect(first.X, first.Y, bounds.Width - first.X, first.Height);
-        var below = new Rect(0, first.Bottom, bounds.Width, Math.Max(0, bounds.Height - first.Bottom));
-        var fadeGeometry = new GeometryGroup { Children = { new RectangleGeometry(lineRect), new RectangleGeometry(below) } };
-        var solidGeometry = new CombinedGeometry(GeometryCombineMode.Exclude, new RectangleGeometry(bounds), fadeGeometry);
-
-        using (context.PushGeometryClip(solidGeometry))
-        {
-            layout.Draw(context, default);
-        }
-
-        var endX = layout.HitTestTextPosition(_content.Text.Length).Right;
-        var mask = new LinearGradientBrush
-        {
-            StartPoint = new RelativePoint(first.X, 0, RelativeUnit.Absolute),
-            EndPoint = new RelativePoint(Math.Max(endX, first.X + 1), 0, RelativeUnit.Absolute),
-            GradientStops =
-            {
-                new GradientStop(Color.FromArgb((byte)(oldest * 255), 0, 0, 0), 0),
-                new GradientStop(Color.FromArgb((byte)(newest * 255), 0, 0, 0), 1),
-            },
-        };
-        using (context.PushGeometryClip(fadeGeometry))
-        using (context.PushOpacityMask(mask, bounds))
-        {
-            layout.Draw(context, default);
-        }
-    }
-
-    private void RequestNextFrame()
-    {
-        if (_frameRequested || TopLevel.GetTopLevel(this) is not { } top)
-        {
-            return;
-        }
-        _frameRequested = true;
-        top.RequestAnimationFrame(_ =>
-        {
-            _frameRequested = false;
-            InvalidateVisual();
-        });
     }
 
     /// <summary>本地坐标 → 字符偏移。</summary>

@@ -20,6 +20,7 @@ StreamMark：面向 AI 对话场景的流式 Markdown 渲染库，Avalonia 12 / 
 | AOT 冒烟（CI 门禁的等价命令） | `dotnet publish samples/StreamMark.Gallery -c Release -r <rid>`，要求 publish 日志里 0 个 `warning IL####`；再把 `artifacts/native/<rid>/` 的文件复制到发布输出旁，运行 `StreamMark.Gallery --smoke` | 缺原生库时会在 `ratex.*` 检查失败；`--smoke` 的退出码即结论（0 = 全部通过） |
 | 打包本地 NuGet | `tools/pack-local.sh <version>` | 产出 `artifacts/packages/*.nupkg`；重新打包必须升版本号 |
 | 基准 | `dotnet run -c Release --project bench/StreamMark.Benchmarks -- --filter '*'` | ShortRun，只看量级；结果记录在 [docs/benchmarks.md](docs/benchmarks.md) |
+| 流式 CPU 基准（真实窗口） | `tools/cpu-bench.sh [rid]` | NativeAOT 发布 `bench/StreamMark.CpuHarness` 并依次跑场景矩阵，结果追加到 `artifacts/cpu-bench.txt`；会打开窗口，运行期间保持可见。改动渲染、排版、节奏或会话面板后跑一次并与 [docs/benchmarks.md](docs/benchmarks.md) 对比 |
 | 测试截图 | 图片写到 `STREAMMARK_SNAPSHOT_DIR`，未设置时用测试输出目录下的 `snapshots/` | 只用于人工查看，没有基线比对 |
 
 ## 架构与边界
@@ -44,7 +45,9 @@ StreamMark：面向 AI 对话场景的流式 Markdown 渲染库，Avalonia 12 / 
 - 文档必须用 `services.Profile` 创建（`MarkdownEntry.FromText(text, services.Profile)`、`new MarkdownStream(profile: …)`），否则插件注册的标签不会被解析；`MarkdownView` 上先 `SetServices` 再设 `Markdown`，反过来文档会留着旧方言。
 - 插件 `Configure` 只登记委托与工厂（NativeAOT，禁反射）；`PluginRegistry` 首次访问即固化，之后修改 `Plugins` 无效。同名组件后登记者覆盖先登记者是设计内行为。
 - 选区坐标只存值（`Entry` / `BlockKey` / `Segment` / `Offset`），不得持有视图引用；复制必须经 `ISelectionHost.GetSnapshot(entry)` 取模型，否则被虚拟化回收的块复制不到。
-- `TextRunCache` 是 Avalonia 不稳定 API，只在 `TextSegmentView` 内用 `#pragma warning disable CS0618` 限定；`InvalidateFrom` 的失效位置必须是差异点所在段落的起点，否则每次追加都会变成一次硬换行。
+- `TextRunCache` 是 Avalonia 不稳定 API，只在 `TextSegmentView` / `SegmentLayout` 内用 `#pragma warning disable CS0618` 限定；`InvalidateFrom` 的失效位置必须是差异点所在段落的起点，否则每次追加都会变成一次硬换行。
+- 文本片段按行排版（`SegmentLayout`）、按行录制（每行一个 `SegmentLineVisual`）：内容变化必须经 `TextSegmentView.Set` 算出差异点再 `InvalidateLayout(from)`，只从差异点所在行的前一行重排；直接整段失效会让流式长段落退回 O(段落长度) 每帧。增量结果必须与整段排版逐行一致（`IncrementalLayoutTests`）。
+- 末尾渐显在渲染线程（`TailFade` 的 `CompositionCustomVisualHandler`）：渐显层只能画字形与矩形，含装饰线或内嵌对象的文字不参与渐显；不要再加每帧 `RequestAnimationFrame` → `InvalidateVisual` 的循环。
 - NativeAOT：正则一律 `[GeneratedRegex]`、JSON 一律源生成、主题用 `x:Class` 编译加载、不用反射绑定。裁剪 / AOT 警告按 `Directory.Build.props` 的列表视为错误，CI 另外要求发布日志里 0 个 IL 警告。
 - 包版本只写在 `Directory.Packages.props`，偏离用 `VersionOverride`（见 `src/StreamMark.Mermaid` 的 Svg.Skia）。新项目要加进 `StreamMark.slnx`；放在 `src/` 下的项目自动获得可打包、AOT 兼容与 XML 文档属性。
 - 原生库有两条分发路径：NuGet 包的 `runtimes/<rid>/native/` 与仓库内的 `artifacts/native/<rid>/`（由 `Directory.Build.targets` 按目标 RID 复制给非可打包项目）。改任一条都要顾及另一条。
