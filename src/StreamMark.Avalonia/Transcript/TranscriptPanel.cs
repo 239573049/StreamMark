@@ -34,6 +34,8 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
         public DocumentSnapshot? Applied;
         public RenderContext? Context;
         public readonly List<Row> Rows = [];
+        // 每个顶层块占用的行数（超长代码块拆成多行），与快照中的块一一对应
+        public readonly List<int> Slots = [];
         public readonly Plugins.BlockStateStore State = new();
         public Control? ContentView;
     }
@@ -43,6 +45,8 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
         public EntryState Owner { get; } = owner;
         public MarkdownBlock? Block;
         public Control? View;
+        public int Chunk;
+        public int ChunkCount = 1;
         public double Height;
         public bool Measured;
         public double Top;
@@ -247,33 +251,76 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
             }
             foreach (var op in SnapshotDiff.Compute(state.Applied, latest))
             {
+                var rowStart = 0;
+                for (var b = 0; b < op.Index; b++)
+                {
+                    rowStart += state.Slots[b];
+                }
                 switch (op.Kind)
                 {
                     case DiffKind.Insert:
-                        var row = new Row(state) { Block = op.Block };
-                        row.Height = Estimate(op.Block!, context);
-                        state.Rows.Insert(op.Index, row);
-                        _rowsDirty = true;
-                        break;
+                        {
+                            var count = ChunkCount(op.Block!);
+                            for (var c = 0; c < count; c++)
+                            {
+                                var row = new Row(state) { Block = op.Block, Chunk = c, ChunkCount = count };
+                                row.Height = Estimate(row, context);
+                                state.Rows.Insert(rowStart + c, row);
+                            }
+                            state.Slots.Insert(op.Index, count);
+                            _rowsDirty = true;
+                            break;
+                        }
                     case DiffKind.Update:
-                        var updated = state.Rows[op.Index];
-                        updated.Block = op.Block;
-                        updated.Measured = false;
-                        if (updated.View is BlockView view)
                         {
-                            UpdateView(updated, view, context);
+                            var oldCount = state.Slots[op.Index];
+                            var count = ChunkCount(op.Block!);
+                            // 分段数变化：增删末尾的行，其余行原地更新
+                            for (var c = count; c < oldCount; c++)
+                            {
+                                Unrealize(state.Rows[rowStart + count]);
+                                state.Rows.RemoveAt(rowStart + count);
+                            }
+                            for (var c = oldCount; c < count; c++)
+                            {
+                                state.Rows.Insert(rowStart + c, new Row(state));
+                            }
+                            for (var c = 0; c < count; c++)
+                            {
+                                var updated = state.Rows[rowStart + c];
+                                updated.Block = op.Block;
+                                updated.Chunk = c;
+                                updated.ChunkCount = count;
+                                updated.Measured = false;
+                                if (updated.View is BlockView view)
+                                {
+                                    UpdateView(updated, view, context);
+                                }
+                                else
+                                {
+                                    updated.Height = Estimate(updated, context);
+                                }
+                            }
+                            state.Slots[op.Index] = count;
+                            if (count != oldCount)
+                            {
+                                _rowsDirty = true;
+                            }
+                            _topsDirty = true;
+                            break;
                         }
-                        else
-                        {
-                            updated.Height = Estimate(op.Block!, context);
-                        }
-                        _topsDirty = true;
-                        break;
                     case DiffKind.Remove:
-                        Unrealize(state.Rows[op.Index]);
-                        state.Rows.RemoveAt(op.Index);
-                        _rowsDirty = true;
-                        break;
+                        {
+                            var count = state.Slots[op.Index];
+                            for (var c = 0; c < count; c++)
+                            {
+                                Unrealize(state.Rows[rowStart]);
+                                state.Rows.RemoveAt(rowStart);
+                            }
+                            state.Slots.RemoveAt(op.Index);
+                            _rowsDirty = true;
+                            break;
+                        }
                 }
             }
             state.Applied = latest;
@@ -296,17 +343,49 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
 
     private static RenderContext? ViewContext(BlockView view) => view.CurrentContext;
 
+    /// <summary>超过这个行数的代码块在会话中拆成多段，每段一行，只实例化视口附近的分段。</summary>
+    public const int ChunkThresholdLines = 200;
+
+    public const int LinesPerChunk = 128;
+
+    private static int ChunkCount(MarkdownBlock block)
+    {
+        if (block is not CodeBlock code)
+        {
+            return 1;
+        }
+        var lines = 1;
+        foreach (var c in code.Code)
+        {
+            if (c == '\n')
+            {
+                lines++;
+            }
+        }
+        return lines > ChunkThresholdLines ? (lines + LinesPerChunk - 1) / LinesPerChunk : 1;
+    }
+
+    private static void ApplyChunk(Row row, BlockView view)
+    {
+        if (view is CodeBlockView code)
+        {
+            code.SetChunk(row.Chunk, row.ChunkCount, LinesPerChunk);
+        }
+    }
+
     private void UpdateView(Row row, BlockView view, RenderContext context)
     {
         var segment = 0;
         if (BlockViewFactory.CanReuse(view, row.Block!, context))
         {
+            ApplyChunk(row, view);
             view.Update(context, row.Block!, row.Block!.Key, ref segment);
         }
         else
         {
             Children.Remove(view);
             var replacement = BlockViewFactory.Create(row.Block!, context);
+            ApplyChunk(row, replacement);
             replacement.Update(context, row.Block!, row.Block!.Key, ref segment);
             row.View = replacement;
             Children.Add(replacement);
@@ -314,6 +393,18 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
         row.Measured = false;
         _topsDirty = true;
     }
+
+    private double Estimate(Row row, RenderContext context)
+    {
+        if (row.ChunkCount > 1 && row.Block is CodeBlock)
+        {
+            var lines = row.Chunk < row.ChunkCount - 1 ? LinesPerChunk : Math.Max(1, ChunkCountLines(row) - row.Chunk * LinesPerChunk);
+            return lines * context.Style.CodeLineHeight + (row.Chunk == 0 ? 34 : 0) + (row.Chunk == row.ChunkCount - 1 ? 14 : 0);
+        }
+        return Estimate(row.Block!, context);
+    }
+
+    private static int ChunkCountLines(Row row) => ((CodeBlock)row.Block!).Code.Count(c => c == '\n') + 1;
 
     // 未测量行的高度估算：按块类型与内容长度粗略估计
     private double Estimate(MarkdownBlock block, RenderContext context)
@@ -372,7 +463,9 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
         {
             if (i > 0)
             {
-                y += ReferenceEquals(_rows[i].Owner, _rows[i - 1].Owner) ? spacing : EntrySpacing;
+                // 同一代码块的分段首尾相接；同一消息的块之间用块间距；消息之间用消息间距
+                y += _rows[i].Chunk > 0 && ReferenceEquals(_rows[i].Block, _rows[i - 1].Block) ? 0
+                    : ReferenceEquals(_rows[i].Owner, _rows[i - 1].Owner) ? spacing : EntrySpacing;
             }
             _rows[i].Top = y;
             y += _rows[i].Height;
@@ -416,6 +509,7 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
         {
             var context = ContextFor(index, row.Owner);
             var blockView = BlockViewFactory.Create(row.Block!, context);
+            ApplyChunk(row, blockView);
             var segment = 0;
             blockView.Update(context, row.Block!, row.Block!.Key, ref segment);
             view = blockView;

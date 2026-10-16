@@ -15,21 +15,25 @@ using StreamMark.Core.Model;
 namespace StreamMark.Avalonia.Rendering;
 
 /// <summary>
-/// 代码块：头部（语言、换行切换、复制）+ 代码区。代码按行排版并缓存，流式追加时只为新行和最后一行重新排版；
-/// 语法高亮在后台增量进行，结果回到界面线程后只替换颜色有变化的行。
+/// 代码块：头部（语言 / 路径、插件操作、换行切换、复制）+ 代码区。代码按行排版并缓存；
+/// 切行与增量高亮放在块共享状态 <see cref="CodeBlockState"/> 中，回收后重建或分段显示都不重复计算。
+/// 会话视图中的超长代码会拆成多段（<see cref="SetChunk"/>），只有第一段显示头部，所有分段共用一个选区片段。
 /// </summary>
 public sealed class CodeBlockView : BlockView
 {
     private const double HeaderHeight = 34;
     private const double Padding = 14;
+    private const string WrapState = "code.wrap";
 
     private readonly IconButton _copy = new() { Icon = MarkdownIcons.Copy };
     private readonly IconButton _wrap = new() { Icon = MarkdownIcons.Wrap };
     private readonly CodeTextView _code = new();
-    private TextLayout? _language;
-    private DispatcherTimer? _copiedTimer;
     private readonly List<(IconButton Button, Plugins.BlockActionDescriptor Action)> _actions = [];
-    private const string WrapState = "code.wrap";
+    private TextLayout? _title;
+    private DispatcherTimer? _copiedTimer;
+    private int _chunk;
+    private int _chunkCount = 1;
+    private int _linesPerChunk = int.MaxValue;
 
     public CodeBlockView()
     {
@@ -58,6 +62,31 @@ public sealed class CodeBlockView : BlockView
         }
     }
 
+    /// <summary>当前分段（0 起）与分段总数。</summary>
+    public (int Index, int Count) Chunk => (_chunk, _chunkCount);
+
+    private bool IsFirstChunk => _chunk == 0;
+
+    private bool IsLastChunk => _chunk == _chunkCount - 1;
+
+    /// <summary>作为超长代码的第 <paramref name="index"/> 段（每段 <paramref name="linesPerChunk"/> 行）显示。</summary>
+    public void SetChunk(int index, int count, int linesPerChunk)
+    {
+        _chunk = index;
+        _chunkCount = Math.Max(1, count);
+        _linesPerChunk = count <= 1 ? int.MaxValue : linesPerChunk;
+        foreach (var button in HeaderButtons)
+        {
+            button.IsVisible = IsFirstChunk;
+        }
+        InvalidateMeasure();
+        InvalidateVisual();
+    }
+
+    private double TopHeight => IsFirstChunk ? HeaderHeight : 0;
+
+    private double BottomHeight => IsLastChunk ? Padding : 0;
+
     protected override void OnUpdate(RenderContext context, MarkdownBlock? previous, MarkdownBlock block, int topKey, ref int segment, bool contextChanged)
     {
         var code = (CodeBlock)block;
@@ -71,10 +100,10 @@ public sealed class CodeBlockView : BlockView
             {
                 title += " · " + path + (fence.StartLine is { } start ? $"#L{start}" + (fence.EndLine is { } end && end != start ? $"-{end}" : "") : "");
             }
-            _language = new TextLayout(title, new Typeface(style.MonospaceFontFamily), style.CodeFontSize * 0.92, style.SecondaryForeground,
+            _title = new TextLayout(title, new Typeface(style.MonospaceFontFamily), style.CodeFontSize * 0.92, style.SecondaryForeground,
                 textTrimming: TextTrimming.CharacterEllipsis, maxWidth: 480);
             UpdateActions(context, code);
-            foreach (var button in new[] { _copy, _wrap }.Concat(_actions.Select(a => a.Button)))
+            foreach (var button in HeaderButtons)
             {
                 button.Foreground = style.SecondaryForeground;
                 button.HoverBackground = style.HoverBackground;
@@ -82,7 +111,10 @@ public sealed class CodeBlockView : BlockView
             }
         }
         Wrap = context.State.Get(topKey, WrapState, false);
-        _code.Set(context, KeyFor(context, topKey, ref segment), code.Code, code.Language, code.IsOpen);
+        var shared = CodeBlockState.For(context, topKey, code.Language);
+        shared.Update(code.Code);
+        var lineStart = _linesPerChunk == int.MaxValue ? 0 : _chunk * _linesPerChunk;
+        _code.Set(context, KeyFor(context, topKey, ref segment), shared, lineStart, _linesPerChunk);
         InvalidateMeasure();
     }
 
@@ -100,7 +132,7 @@ public sealed class CodeBlockView : BlockView
             {
                 continue;
             }
-            var button = new IconButton { Icon = action.Icon };
+            var button = new IconButton { Icon = action.Icon, IsVisible = IsFirstChunk };
             ToolTip.SetTip(button, action.Label);
             button.Click += async (_, _) =>
             {
@@ -131,30 +163,34 @@ public sealed class CodeBlockView : BlockView
         _copiedTimer.Start();
     }
 
+    private IEnumerable<IconButton> HeaderButtons => new[] { _copy, _wrap }.Concat(_actions.Select(a => a.Button));
+
     protected override Size MeasureOverride(Size availableSize)
     {
-        _copy.Measure(Size.Infinity);
-        _wrap.Measure(Size.Infinity);
-        foreach (var (button, _) in _actions)
+        foreach (var button in HeaderButtons)
         {
             button.Measure(Size.Infinity);
         }
         var inner = Math.Max(0, availableSize.Width - Padding * 2);
         _code.Measure(new Size(inner, double.PositiveInfinity));
         var width = double.IsFinite(availableSize.Width) ? availableSize.Width : _code.DesiredSize.Width + Padding * 2;
-        return new Size(width, HeaderHeight + _code.DesiredSize.Height + Padding);
+        return new Size(width, TopHeight + _code.DesiredSize.Height + BottomHeight);
     }
 
     protected override Size ArrangeOverride(Size finalSize)
     {
         var x = finalSize.Width - 6;
-        foreach (var button in new[] { _copy, _wrap }.Concat(_actions.Select(a => a.Button)))
+        foreach (var button in HeaderButtons)
         {
+            if (!button.IsVisible)
+            {
+                continue;
+            }
             x -= button.DesiredSize.Width;
             button.Arrange(new Rect(x, (HeaderHeight - button.DesiredSize.Height) / 2, button.DesiredSize.Width, button.DesiredSize.Height));
             x -= 2;
         }
-        _code.Arrange(new Rect(Padding, HeaderHeight, Math.Max(0, finalSize.Width - Padding * 2), _code.DesiredSize.Height));
+        _code.Arrange(new Rect(Padding, TopHeight, Math.Max(0, finalSize.Width - Padding * 2), _code.DesiredSize.Height));
         return finalSize;
     }
 
@@ -165,15 +201,58 @@ public sealed class CodeBlockView : BlockView
             return;
         }
         var style = Context.Style;
-        var radius = style.CornerRadius.TopLeft;
-        context.DrawRectangle(style.CodeBackground, new Pen(style.CodeBorderBrush, 1), new Rect(Bounds.Size).Deflate(0.5), radius, radius);
-        _language?.Draw(context, new Point(Padding, (HeaderHeight - _language.Height) / 2));
+        var r = style.CornerRadius.TopLeft;
+        var bounds = new Rect(Bounds.Size).Deflate(0.5);
+        if (_chunkCount == 1)
+        {
+            context.DrawRectangle(style.CodeBackground, new Pen(style.CodeBorderBrush, 1), bounds, r, r);
+        }
+        else
+        {
+            // 分段：首段只有上圆角，末段只有下圆角，中间段直角；各段背景首尾相接
+            var top = IsFirstChunk ? r : 0;
+            var bottom = IsLastChunk ? r : 0;
+            var geometry = new StreamGeometry();
+            using (var g = geometry.Open())
+            {
+                g.BeginFigure(new Point(bounds.Left + top, bounds.Top), true);
+                g.LineTo(new Point(bounds.Right - top, bounds.Top));
+                if (top > 0)
+                {
+                    g.ArcTo(new Point(bounds.Right, bounds.Top + top), new Size(top, top), 0, false, SweepDirection.Clockwise);
+                }
+                g.LineTo(new Point(bounds.Right, bounds.Bottom - bottom));
+                if (bottom > 0)
+                {
+                    g.ArcTo(new Point(bounds.Right - bottom, bounds.Bottom), new Size(bottom, bottom), 0, false, SweepDirection.Clockwise);
+                }
+                g.LineTo(new Point(bounds.Left + bottom, bounds.Bottom));
+                if (bottom > 0)
+                {
+                    g.ArcTo(new Point(bounds.Left, bounds.Bottom - bottom), new Size(bottom, bottom), 0, false, SweepDirection.Clockwise);
+                }
+                g.LineTo(new Point(bounds.Left, bounds.Top + top));
+                if (top > 0)
+                {
+                    g.ArcTo(new Point(bounds.Left + top, bounds.Top), new Size(top, top), 0, false, SweepDirection.Clockwise);
+                }
+                g.EndFigure(true);
+            }
+            context.DrawGeometry(style.CodeBackground, null, geometry);
+        }
+        if (IsFirstChunk)
+        {
+            _title?.Draw(context, new Point(Padding, (HeaderHeight - _title.Height) / 2));
+        }
     }
 
     public override IEnumerable<ISelectableSegment> Segments() => [_code];
 }
 
-/// <summary>代码文本：等宽、逐行排版并缓存，支持不换行时的横向滚动。</summary>
+/// <summary>
+/// 代码文本：等宽、逐行排版并缓存，支持不换行时的横向滚动。可只显示一个行窗口（长代码分段），
+/// 偏移始终是整个代码块中的全局偏移，因此各分段共用一个选区片段。
+/// </summary>
 public sealed class CodeTextView : Control, ISelectableSegment
 {
     private sealed class Line
@@ -187,22 +266,19 @@ public sealed class CodeTextView : Control, ISelectableSegment
     private readonly List<Line> _lines = [];
     private readonly List<int> _lineStarts = [];
     private RenderContext? _context;
+    private CodeBlockState? _state;
     private string _text = "";
-    private string? _language;
+    private int _windowStart;
+    private int _windowLines = int.MaxValue;
     private bool _wrap;
     private double _layoutWidth = double.NaN;
     private double _offsetX;
     private double _contentWidth;
     private bool _hover;
 
-    private IHighlightSession? _session;
-    private string? _sessionLanguage;
-    private readonly object _highlightLock = new();
-    private bool _highlightRunning;
-    private string? _highlightPending;
-
     public SegmentKey Key { get; private set; }
 
+    /// <summary>整个代码块的文本（选区与复制按全局偏移计算）。</summary>
     public string Text => _text;
 
     public Control View => this;
@@ -232,7 +308,7 @@ public sealed class CodeTextView : Control, ISelectableSegment
         ClipToBounds = true;
     }
 
-    internal void Set(RenderContext context, SegmentKey key, string code, string? language, bool isOpen)
+    internal void Set(RenderContext context, SegmentKey key, CodeBlockState state, int lineStart, int lineCount)
     {
         var contextChanged = !ReferenceEquals(_context, context);
         if (_context is not null && contextChanged)
@@ -243,58 +319,58 @@ public sealed class CodeTextView : Control, ISelectableSegment
         {
             context.Selection.Changed += InvalidateVisual;
         }
-        var styleChanged = _context is null || !ReferenceEquals(_context.Style, context.Style) || !ReferenceEquals(_context.Services, context.Services);
+        var styleChanged = _context is null || !ReferenceEquals(_context.Style, context.Style);
         _context = context;
         Key = key;
-        if (styleChanged || language != _language)
+        if (!ReferenceEquals(_state, state))
         {
-            _session?.Dispose();
-            _session = null;
-            _sessionLanguage = null;
-            _language = language;
+            if (_state is not null)
+            {
+                _state.HighlightUpdated -= OnHighlightUpdated;
+            }
+            _state = state;
+            if (VisualRoot is not null)
+            {
+                state.HighlightUpdated += OnHighlightUpdated;
+            }
             _lines.Clear();
-            _lineStarts.Clear();
-            _text = "";
         }
-        if (code == _text && _lines.Count > 0)
+        if (styleChanged || lineStart != _windowStart || lineCount != _windowLines)
         {
-            return;
+            _lines.Clear();
         }
-        ApplyText(code);
-        RequestHighlight(code);
+        _windowStart = lineStart;
+        _windowLines = lineCount;
+        _text = state.Code;
+        ApplyWindow();
     }
 
-    private void ApplyText(string code)
+    // 只为窗口内的行建立排版对象；文本与着色未变的行保留缓存
+    private void ApplyWindow()
     {
-        _text = code;
-        var start = 0;
-        var index = 0;
+        var state = _state!;
+        var end = (int)Math.Min((long)_windowStart + _windowLines, state.LineCount);
         _lineStarts.Clear();
-        while (true)
+        var index = 0;
+        for (var i = _windowStart; i < end; i++, index++)
         {
-            var newline = code.IndexOf('\n', start);
-            var end = newline < 0 ? code.Length : newline;
-            var text = code[start..end].TrimEnd('\r');
-            _lineStarts.Add(start);
+            var text = state.LineText(i);
+            _lineStarts.Add(state.LineStarts[i]);
+            var tokens = state.TokensFor(i, text);
             if (index < _lines.Count)
             {
-                if (_lines[index].Text != text)
+                var line = _lines[index];
+                if (line.Text != text || !SameTokens(line.Tokens, tokens))
                 {
-                    _lines[index].Text = text;
-                    _lines[index].Layout = null;
-                    _lines[index].Tokens = default;
+                    line.Text = text;
+                    line.Tokens = tokens;
+                    line.Layout = null;
                 }
             }
             else
             {
-                _lines.Add(new Line { Text = text });
+                _lines.Add(new Line { Text = text, Tokens = tokens });
             }
-            index++;
-            if (newline < 0)
-            {
-                break;
-            }
-            start = newline + 1;
         }
         if (_lines.Count > index)
         {
@@ -304,84 +380,14 @@ public sealed class CodeTextView : Control, ISelectableSegment
         InvalidateVisual();
     }
 
-    // 后台增量着色：同一时刻最多一个任务，期间到达的新代码合并为一次
-    private void RequestHighlight(string code)
-    {
-        if (_context?.Services.Registry.Highlighter is not { } highlighter || string.IsNullOrEmpty(_language) || !highlighter.SupportsLanguage(_language))
-        {
-            return;
-        }
-        if (_session is null || _sessionLanguage != _language)
-        {
-            _session?.Dispose();
-            _session = highlighter.CreateSession(_language, _context.Style.HighlightTheme);
-            _sessionLanguage = _language;
-        }
-        lock (_highlightLock)
-        {
-            _highlightPending = code;
-            if (_highlightRunning)
-            {
-                return;
-            }
-            _highlightRunning = true;
-        }
-        var session = _session;
-        _ = Task.Run(() => RunHighlight(session));
-    }
+    private static bool SameTokens(ImmutableArray<HighlightToken> a, ImmutableArray<HighlightToken> b) =>
+        a.IsDefault ? b.IsDefault : !b.IsDefault && a.SequenceEqual(b);
 
-    private void RunHighlight(IHighlightSession session)
+    private void OnHighlightUpdated()
     {
-        while (true)
+        if (_state is not null)
         {
-            string? code;
-            lock (_highlightLock)
-            {
-                code = _highlightPending;
-                _highlightPending = null;
-                if (code is null)
-                {
-                    _highlightRunning = false;
-                    return;
-                }
-            }
-            IReadOnlyList<ImmutableArray<HighlightToken>> tokens;
-            try
-            {
-                tokens = session.Update(code);
-            }
-            catch (Exception)
-            {
-                continue;
-            }
-            Dispatcher.UIThread.Post(() => ApplyTokens(session, code, tokens));
-        }
-    }
-
-    private void ApplyTokens(IHighlightSession session, string code, IReadOnlyList<ImmutableArray<HighlightToken>> tokens)
-    {
-        if (!ReferenceEquals(session, _session))
-        {
-            return;
-        }
-        // 着色期间代码可能又增长了：只应用文本仍然一致的行
-        var codeLines = code.Split('\n');
-        var changed = false;
-        for (var i = 0; i < tokens.Count && i < _lines.Count && i < codeLines.Length; i++)
-        {
-            var line = _lines[i];
-            if (line.Text != codeLines[i].TrimEnd('\r') || !line.Tokens.IsDefault && line.Tokens.SequenceEqual(tokens[i]))
-            {
-                continue;
-            }
-            line.Tokens = tokens[i];
-            line.Layout = null;
-            changed = true;
-        }
-        if (changed)
-        {
-            InvalidateMeasure();
-            InvalidateVisual();
+            ApplyWindow();
         }
     }
 
@@ -479,7 +485,7 @@ public sealed class CodeTextView : Control, ISelectableSegment
                     var e = Math.Min(range.End, lineEnd + 1);
                     if (e > s)
                     {
-                        var hasNewline = range.End > lineEnd && i < _lines.Count - 1;
+                        var hasNewline = range.End > lineEnd && lineEnd < _text.Length;
                         var textEnd = Math.Min(e, lineEnd);
                         foreach (var rect in layout.HitTestTextRange(s - lineStart, Math.Max(0, textEnd - s)))
                         {
@@ -544,6 +550,10 @@ public sealed class CodeTextView : Control, ISelectableSegment
 
     public int HitTest(Point point)
     {
+        if (_lines.Count == 0)
+        {
+            return 0;
+        }
         var p = new Point(point.X + _offsetX, point.Y);
         double y = 0;
         for (var i = 0; i < _lines.Count; i++)
@@ -585,6 +595,12 @@ public sealed class CodeTextView : Control, ISelectableSegment
         {
             _context.Selection.Changed += InvalidateVisual;
         }
+        if (_state is not null)
+        {
+            _state.HighlightUpdated += OnHighlightUpdated;
+            // 回收期间可能已有新的着色结果
+            ApplyWindow();
+        }
     }
 
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
@@ -593,6 +609,10 @@ public sealed class CodeTextView : Control, ISelectableSegment
         if (_context is not null)
         {
             _context.Selection.Changed -= InvalidateVisual;
+        }
+        if (_state is not null)
+        {
+            _state.HighlightUpdated -= OnHighlightUpdated;
         }
     }
 }

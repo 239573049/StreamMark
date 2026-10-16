@@ -28,6 +28,12 @@ public sealed record StreamPacerOptions
 
     public TimeSpan MaxDrain { get; init; } = TimeSpan.FromMilliseconds(520);
 
+    /// <summary>
+    /// 积压中已经包含完整的块（遇到空行）时，直接放出到最后一个空行，只对最后一个未完成的块做逐字平滑。
+    /// 适合网络突发很大的情况（例如恢复连接后一次到达多个段落）。默认关闭。
+    /// </summary>
+    public bool SkipCompletedBlocks { get; init; }
+
     /// <summary>积压超过这个字符数时直接放出（例如一次性粘贴的大段文本）。</summary>
     public int BypassThreshold { get; init; } = 4096;
 
@@ -164,6 +170,15 @@ public sealed class StreamPacer
                 break;
             }
             count = (int)Math.Max(count, end - _revealed);
+        }
+
+        if (_options.SkipCompletedBlocks && backlog > count)
+        {
+            var boundary = _pending.ToString().LastIndexOf("\n\n", StringComparison.Ordinal);
+            if (boundary >= 0)
+            {
+                count = Math.Max(count, boundary + 2);
+            }
         }
 
         if (count <= 0)

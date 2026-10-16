@@ -84,4 +84,19 @@ public sealed class StreamPacerTests
         Assert.Equal(Ms(500), pacer.GetRevealTime(0));
         Assert.Null(pacer.GetRevealTime(100));
     }
+
+    [Fact]
+    public void SkipCompletedBlocks_ReleasesUpToLastBlankLine()
+    {
+        var pacer = new StreamPacer(new StreamPacerOptions { SkipCompletedBlocks = true });
+        var text = "First paragraph is complete.\n\nSecond paragraph is complete too.\n\nThird is still stream";
+        pacer.Push(text, Ms(0));
+        var first = pacer.Tick(Ms(16));
+        Assert.EndsWith("too.\n\n", first);
+        Assert.True(pacer.Backlog > 0);
+
+        var normal = new StreamPacer();
+        normal.Push(text, Ms(0));
+        Assert.True(normal.Tick(Ms(16)).Length < first.Length);
+    }
 }

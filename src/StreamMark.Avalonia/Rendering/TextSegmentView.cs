@@ -1,3 +1,5 @@
+using System.Text;
+using Avalonia.Media.Fonts.Tables.Cmap;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
@@ -25,6 +27,13 @@ public sealed class TextSegmentView : Control, ISelectableSegment
     private TextWrapping _wrapping = TextWrapping.Wrap;
 
     private TextLayout? _layout;
+#pragma warning disable CS0618 // TextRunCache 是 Avalonia 12 的预览 API（[Unstable]），只在这里使用
+    // 已整形文本段的缓存：流式追加时只为变化处之后的文本重新整形
+    private readonly TextRunCache _runCache = new();
+#pragma warning restore CS0618
+
+    /// <summary>是否使用整形缓存（测试与基准对比用）。</summary>
+    internal static bool UseRunCache { get; set; } = true;
     private double _layoutWidth = double.NaN;
     private int _hoverLink = -1;
     private bool _hoverClickable;
@@ -101,6 +110,19 @@ public sealed class TextSegmentView : Control, ISelectableSegment
         {
             context.Selection.Changed += OnSelectionChanged;
         }
+        // 只追加且样式不变时，保留差异点之前的整形结果
+        var appendOnly = ReferenceEquals(_context, context) && _fontSize == fontSize && _fontWeight == weight && Equals(_foreground, foreground);
+        var from = appendOnly ? FirstDifference(_content, content) : 0;
+#pragma warning disable CS0618
+        if (from <= 0)
+        {
+            _runCache.Invalidate();
+        }
+        else
+        {
+            _runCache.InvalidateFrom(from);
+        }
+#pragma warning restore CS0618
         _context = context;
         _content = content;
         _fontSize = fontSize;
@@ -112,6 +134,40 @@ public sealed class TextSegmentView : Control, ISelectableSegment
     }
 
     private bool IsAttached => VisualRoot is not null;
+
+    // 新旧内容第一个不同的位置：文本公共前缀，且该位置之前的样式区间、对象完全相同
+    private static int FirstDifference(InlineContent old, InlineContent next)
+    {
+        var limit = old.Text.AsSpan().CommonPrefixLength(next.Text);
+        foreach (var span in old.Spans)
+        {
+            if (span.Start >= limit)
+            {
+                break;
+            }
+            var match = next.Spans.FirstOrDefault(s => s.Start == span.Start);
+            if (match != span)
+            {
+                // 区间被延长（如粗体继续增长）时从区间开头重新整形
+                limit = Math.Min(limit, span.Start);
+            }
+        }
+        foreach (var span in next.Spans)
+        {
+            if (span.Start < limit && !old.Spans.Contains(span))
+            {
+                limit = Math.Min(limit, span.Start);
+            }
+        }
+        foreach (var obj in next.Objects)
+        {
+            if (obj.Offset < limit && !old.Objects.Contains(obj))
+            {
+                limit = Math.Min(limit, obj.Offset);
+            }
+        }
+        return limit;
+    }
 
     private void InvalidateLayout()
     {
@@ -180,7 +236,9 @@ public sealed class TextSegmentView : Control, ISelectableSegment
         var source = new InlineTextSource(this, _context, _content, _fontSize, _fontWeight, _foreground ?? _context.Style.Foreground, maxWidth);
         var paragraph = new GenericTextParagraphProperties(source.DefaultProperties, _alignment, _wrapping,
             lineHeight: _context.Style.LineHeight * (_fontSize / _context.Style.FontSize));
-        _layout = new TextLayout(source, paragraph, maxWidth: maxWidth);
+#pragma warning disable CS0618
+        _layout = new TextLayout(source, paragraph, maxWidth: maxWidth, textRunCache: UseRunCache ? _runCache : null);
+#pragma warning restore CS0618
         _layoutWidth = maxWidth;
         return _layout;
     }
@@ -482,7 +540,110 @@ public sealed class TextSegmentView : Control, ISelectableSegment
                 break;
             }
 
-            return new TextCharacters(text.AsMemory(textSourceIndex, end - textSourceIndex), PropertiesFor(style, component));
+            var properties = PropertiesFor(style, component);
+            return CreateCharacters(text, textSourceIndex, end, properties, style, component);
+        }
+
+        // 回退字体：Avalonia 在为缺字的文字找回退字体时，会优先复用"上一段"的回退字体而不检查字重 / 字形，
+        // 导致"中文 **粗体**"中的粗体沿用常规字重的回退字体（反之亦然）。这里自己按本段的字重、字形解析回退字体，
+        // 让每段文字的主字体就能覆盖其字符，从而不进入那条复用路径。
+        private TextRun CreateCharacters(string text, int start, int end, TextRunProperties properties, InlineStyle style, int component)
+        {
+            var map = GlyphMap(properties);
+            var first = Rune.GetRuneAt(text, start);
+            if (!Covered(map, first))
+            {
+                var length = 0;
+                while (start + length < end)
+                {
+                    var rune = Rune.GetRuneAt(text, start + length);
+                    if (Covered(map, rune))
+                    {
+                        break;
+                    }
+                    length += rune.Utf16SequenceLength;
+                }
+                var typeface = properties.Typeface;
+                if (FontManager.Current.TryMatchCharacter(first.Value, typeface.Style, typeface.Weight, typeface.Stretch, typeface.FontFamily, null, out var fallback))
+                {
+                    return new TextCharacters(text.AsMemory(start, length), FallbackProperties(properties, style, component, fallback));
+                }
+                return new TextCharacters(text.AsMemory(start, length), properties);
+            }
+            // 主字体能覆盖的前缀：截到第一个缺字处，缺字部分由下一次调用按上面的规则处理
+            var covered = first.Utf16SequenceLength;
+            while (start + covered < end)
+            {
+                var rune = Rune.GetRuneAt(text, start + covered);
+                if (!Covered(map, rune))
+                {
+                    break;
+                }
+                covered += rune.Utf16SequenceLength;
+            }
+            return new TextCharacters(text.AsMemory(start, covered), properties);
+        }
+
+        private static bool Covered(CharacterToGlyphMap? map, Rune rune) =>
+            map is null || Rune.IsWhiteSpace(rune) || rune.Value < 0x20 || rune.Value == InlineObject.Placeholder || map.Value.ContainsGlyph(rune.Value);
+
+        private readonly Dictionary<TextRunProperties, CharacterToGlyphMap?> _maps = [];
+        private readonly Dictionary<(InlineStyle, int, string), TextRunProperties> _fallbacks = [];
+
+        private CharacterToGlyphMap? GlyphMap(TextRunProperties properties)
+        {
+            if (!_maps.TryGetValue(properties, out var map))
+            {
+                try
+                {
+                    map = properties.Typeface.GlyphTypeface.CharacterToGlyphMap;
+                }
+                catch (Exception)
+                {
+                    map = null;
+                }
+                _maps[properties] = map;
+            }
+            return map;
+        }
+
+        // 粗体回退：系统字体可能没有 700 字重（如苹方只有中粗 600），而按 700 匹配会落回常规字重；
+        // 依次尝试邻近字重，取第一个真正够粗（不低于 600 或带合成粗体）的字形
+        private static Typeface HeavyEnough(FontFamily family, Typeface requested)
+        {
+            var typeface = new Typeface(family, requested.Style, requested.Weight, requested.Stretch);
+            if ((int)requested.Weight < 600)
+            {
+                return typeface;
+            }
+            foreach (var weight in new[] { (int)requested.Weight, 600, 800, 900 })
+            {
+                var candidate = new Typeface(family, requested.Style, (FontWeight)weight, requested.Stretch);
+                try
+                {
+                    var glyphs = candidate.GlyphTypeface;
+                    if ((int)glyphs.Weight >= 600 || glyphs.FontSimulations.HasFlag(FontSimulations.Bold))
+                    {
+                        return candidate;
+                    }
+                }
+                catch (Exception)
+                {
+                }
+            }
+            return typeface;
+        }
+
+        private TextRunProperties FallbackProperties(TextRunProperties properties, InlineStyle style, int component, Typeface fallback)
+        {
+            var key = (style, component, fallback.FontFamily.Name);
+            if (!_fallbacks.TryGetValue(key, out var result))
+            {
+                result = new GenericTextRunProperties(HeavyEnough(fallback.FontFamily, properties.Typeface),
+                    properties.FontRenderingEmSize, properties.TextDecorations, properties.ForegroundBrush, properties.BackgroundBrush, properties.BaselineAlignment);
+                _fallbacks[key] = result;
+            }
+            return result;
         }
 
         private TextRun CreateObjectRun(InlineObject obj)

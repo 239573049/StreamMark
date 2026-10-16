@@ -36,3 +36,10 @@
 - **不需要组件补全处理器**：计划中的 `ComponentCloser` 被取消。未闭合的块级容器由 Markdig 在文末关闭，未闭合的行内成对组件在映射时视为包住其后的文字，写了一半的标签由现有 HTML 处理器去掉；这样流式偏移也无需额外映射。
 - **`StreamMark.Highlighting.TextMate` 依赖 `StreamMark.Avalonia`**：为了提供 `TextMatePlugin`。高亮器本身仍只依赖 Core 接口。
 - **Markdig 的 `CanInterrupt` 对每个候选解析器都会调用（包括没有段落时）**，自定义块解析器只应在当前块是段落时限制打断；`Block.IsOpen` 在续行判断时不可靠，块级组件自行记录关闭状态（`BlockParser.Close`）。
+- **`TextRunCache`（Avalonia 不稳定 API）只在 `TextSegmentView` 中使用**：按新旧内容第一个不同的位置 `InvalidateFrom`，流式段落排版快约 4 倍；用 `#pragma warning disable CS0618` 限定范围。
+- **长代码分段**：超过 200 行的代码块在会话中按 128 行一段拆成多行；切行与高亮放在块共享状态 `CodeBlockState`（块状态存储）中，分段与回收后重建的视图共用，偏移全局化以保证选区跨段连续。各段的横向滚动彼此独立（已知限制）。
+- **中文粗体的两个 Avalonia 问题及规避**：
+  1. 为缺字文字找回退字体时，Avalonia 优先复用"上一段"的回退字体，不检查字重 / 字形，导致"中文 **粗体**"中的粗体沿用常规字重。`TextSegmentView` 自行按本段字重解析回退字体，让每段的主字体就能覆盖其字符，不进入那条复用路径。
+  2. 苹方没有 700 字重，`Typeface(PingFang SC, Bold)` 会匹配到常规字重；回退时依次尝试 700 / 600 / 800 / 900，取第一个真正够粗的字形。
+  有回归测试检查整形后字形的字重。
+- **节奏控制器 `SkipCompletedBlocks`**（默认关闭）：积压中已有完整块（空行）时直接放出到最后一个空行，只对未完成的块做逐字平滑。

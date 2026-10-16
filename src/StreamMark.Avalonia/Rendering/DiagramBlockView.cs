@@ -57,7 +57,9 @@ public sealed class DiagramBlockView : BlockView
     {
         var code = (CodeBlock)block;
         var style = context.Style;
-        _code.Set(context, KeyFor(context, topKey, ref segment), code.Code, code.Language, code.IsOpen);
+        var shared = CodeBlockState.For(context, topKey, code.Language);
+        shared.Update(code.Code);
+        _code.Set(context, KeyFor(context, topKey, ref segment), shared, 0, int.MaxValue);
         _showCode = context.State.Get(topKey, "diagram.code", false);
         _toggle.Icon = _showCode ? MarkdownIcons.Diagram : MarkdownIcons.Code;
         foreach (var button in new[] { _toggle, _copy })
