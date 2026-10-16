@@ -131,4 +131,8 @@ public static class MarkdownIcons
     public static Geometry Diagram { get; } = Geometry.Parse("M1.5,2.5 L6,2.5 L6,6 L1.5,6 Z M10,10 L14.5,10 L14.5,13.5 L10,13.5 Z M3.75,6 L3.75,11.75 L10,11.75");
 
     public static Geometry Chevron { get; } = Geometry.Parse("M4,6 L8,10 L12,6");
+
+    public static Geometry ChevronUp { get; } = Geometry.Parse("M4,10 L8,6 L12,10");
+
+    public static Geometry Download { get; } = Geometry.Parse("M8,2 L8,10.5 M4.5,7 L8,10.5 L11.5,7 M2.5,13.5 L13.5,13.5");
 }

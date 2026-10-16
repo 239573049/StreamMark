@@ -23,6 +23,8 @@ public sealed class LongCodeTests(ITestOutputHelper output)
             var source = code.ToString().TrimEnd('\n');
             var markdown = "Before.\n\n```cs\n" + source + "\n```\n\nAfter.";
             var view = new TranscriptView();
+            // 本测试验证分段：关闭默认折叠
+            Extensions.MarkdownServices.SetServices(view, new Extensions.MarkdownServices { CodeBlocks = Extensions.CodeBlockOptions.Default with { CollapseAfterLines = 0 } });
             var window = new Window { Width = 900, Height = 700, Content = view };
             window.Show();
             var entry = MarkdownEntry.FromText(markdown);

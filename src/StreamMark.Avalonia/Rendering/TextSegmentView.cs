@@ -7,6 +7,7 @@ using Avalonia.Input;
 using Avalonia.Media;
 using Avalonia.Media.TextFormatting;
 using StreamMark.Avalonia.Selection;
+using StreamMark.Avalonia.Extensions;
 using StreamMark.Core.Model;
 
 namespace StreamMark.Avalonia.Rendering;
@@ -69,6 +70,15 @@ public sealed class TextSegmentView : Control, ISelectableSegment
     }
 
     /// <summary>已加载的图片被点击（冒泡）。未处理时打开全屏查看。</summary>
+    public static readonly RoutedEvent<LinkHoveredEventArgs> LinkHoveredEvent =
+        RoutedEvent.Register<TextSegmentView, LinkHoveredEventArgs>(nameof(LinkHovered), RoutingStrategies.Bubble);
+
+    public event EventHandler<LinkHoveredEventArgs>? LinkHovered
+    {
+        add => AddHandler(LinkHoveredEvent, value);
+        remove => RemoveHandler(LinkHoveredEvent, value);
+    }
+
     public static readonly RoutedEvent<ImageClickedEventArgs> ImageClickedEvent =
         RoutedEvent.Register<TextSegmentView, ImageClickedEventArgs>(nameof(ImageClicked), RoutingStrategies.Bubble);
 
@@ -236,6 +246,8 @@ public sealed class TextSegmentView : Control, ISelectableSegment
         {
             _context.Selection.Changed -= OnSelectionChanged;
         }
+        _cardTimer?.Stop();
+        CloseCard();
         // 归还图片句柄；重新挂载时排版会重新取得（通常命中内存缓存）
         if (_images.Count > 0)
         {
@@ -548,7 +560,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
     public Rect GetCharacterBounds(int offset) => _layout?.HitTestTextPosition(Math.Clamp(offset, 0, _content.Text.Length)) ?? default;
 
     /// <summary>指针处可点击的组件（成对组件的文字或自闭合组件对象）。</summary>
-    private (string Name, ComponentAttributes Attributes)? ComponentAt(Point point)
+    private (string Name, ComponentAttributes Attributes, int Start, int Length)? ComponentAt(Point point)
     {
         if (_layout is null || _context is null || (_content.Components.IsEmpty && _content.Objects.IsEmpty))
         {
@@ -565,7 +577,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
             if (obj.Kind == InlineObjectKind.Component && (obj.Offset == index || obj.Offset == index - 1 && hit.IsTrailing)
                 && _context.Plugins.FindInlineComponent(obj.Value) is { } renderer && renderer.IsClickable(obj.Attributes))
             {
-                return (obj.Value, obj.Attributes);
+                return (obj.Value, obj.Attributes, obj.Offset, 1);
             }
         }
         foreach (var span in _content.Spans)
@@ -575,7 +587,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
                 var component = _content.Components[span.ComponentIndex];
                 if (_context.Plugins.FindInlineComponent(component.Name) is { } renderer && renderer.IsClickable(component.Attributes))
                 {
-                    return (component.Name, component.Attributes);
+                    return (component.Name, component.Attributes, span.Start, span.Length);
                 }
             }
         }
@@ -598,10 +610,162 @@ public sealed class TextSegmentView : Control, ISelectableSegment
         {
             if (span.LinkIndex >= 0 && index >= span.Start && index < span.End)
             {
-                return span.LinkIndex;
+                return LinkDecisionFor(span.LinkIndex) == LinkDecision.Block ? -1 : span.LinkIndex;
             }
         }
         return -1;
+    }
+
+    private string? ComponentUrl(string name, ComponentAttributes attributes)
+    {
+        if (name == "cite" && attributes["href"] is { Length: > 0 } href)
+        {
+            return href;
+        }
+        if (name == "citation")
+        {
+            return attributes["href"] ?? (attributes["id"] is { } id ? _context?.Services.Sources?.GetSource(id)?.Url : null);
+        }
+        return null;
+    }
+
+    // 按链接策略打开地址（被禁止的地址不触发事件）
+    private void OpenUrl(string url, string? title)
+    {
+        if (_context is null)
+        {
+            return;
+        }
+        var decision = _context.Services.Links.Evaluate(url);
+        if (decision != LinkDecision.Block)
+        {
+            RaiseEvent(new LinkClickedEventArgs(LinkClickedEvent, this, url, title, decision == LinkDecision.Confirm));
+        }
+    }
+
+    // ---- 引用来源卡片 ----
+
+    private SourceCard? _card;
+    private (int Start, int Length)? _cardRange;
+    private global::Avalonia.Threading.DispatcherTimer? _cardTimer;
+
+    /// <summary>悬停显示来源卡片的延迟。</summary>
+    internal static TimeSpan CardDelay { get; set; } = TimeSpan.FromMilliseconds(350);
+
+    private void UpdateCard(Point position)
+    {
+        var component = ComponentAt(position);
+        CitationSource? source = component is { Name: "citation" } c && c.Attributes["id"] is { } id ? _context?.Services.Sources?.GetSource(id) : null;
+        if (source is null || component is null)
+        {
+            ScheduleCard(null, null);
+            return;
+        }
+        var range = (component.Value.Start, component.Value.Length);
+        if (_cardRange == range && (_card is not null || _cardTimer is { IsEnabled: true }))
+        {
+            return;
+        }
+        ScheduleCard(range, source);
+    }
+
+    private void ScheduleCard((int Start, int Length)? range, CitationSource? source)
+    {
+        _cardTimer?.Stop();
+        if (range is null || source is null)
+        {
+            if (_card is null)
+            {
+                _cardRange = null;
+                return;
+            }
+            // 给指针一点时间移进卡片
+            _cardTimer = new global::Avalonia.Threading.DispatcherTimer(TimeSpan.FromMilliseconds(200), global::Avalonia.Threading.DispatcherPriority.Normal, (_, _) =>
+            {
+                _cardTimer?.Stop();
+                if (_card is { IsPointerInside: false })
+                {
+                    CloseCard();
+                }
+            });
+            _cardTimer.Start();
+            return;
+        }
+        CloseCard();
+        _cardRange = range;
+        _cardTimer = new global::Avalonia.Threading.DispatcherTimer(CardDelay, global::Avalonia.Threading.DispatcherPriority.Normal, (_, _) =>
+        {
+            _cardTimer?.Stop();
+            ShowCard(range.Value, source);
+        });
+        _cardTimer.Start();
+    }
+
+    /// <summary>立即显示某个范围的来源卡片（测试与键盘访问用）。</summary>
+    internal SourceCard? ShowCard((int Start, int Length) range, CitationSource source)
+    {
+        if (_layout is null || _context is null)
+        {
+            return null;
+        }
+        CloseCard();
+        var rects = _layout.HitTestTextRange(range.Start, range.Length).ToList();
+        if (rects.Count == 0)
+        {
+            return null;
+        }
+        var anchor = rects.Aggregate((a, b) => a.Union(b));
+        var url = source.Url;
+        _cardRange = range;
+        _card = SourceCard.Show(this, anchor, source, _context.Style, url is null ? null : () => OpenUrl(url, source.Title));
+        return _card;
+    }
+
+    private void CloseCard()
+    {
+        _card?.Close();
+        _card = null;
+        _cardRange = null;
+    }
+
+    // 各链接的策略判断（内容或上下文变化时重算）
+    private LinkDecision[]? _linkDecisions;
+    private InlineContent? _linkDecisionsFor;
+    private RenderContext? _linkDecisionsContext;
+
+    internal LinkDecision LinkDecisionFor(int link)
+    {
+        if (_context is null || link < 0 || link >= _content.Links.Length)
+        {
+            return LinkDecision.Block;
+        }
+        if (_linkDecisions is null || !ReferenceEquals(_linkDecisionsFor, _content) || !ReferenceEquals(_linkDecisionsContext, _context))
+        {
+            var policy = _context.Services.Links;
+            var decisions = new LinkDecision[_content.Links.Length];
+            for (var i = 0; i < decisions.Length; i++)
+            {
+                var target = _content.Links[i];
+                decisions[i] = policy.Evaluate(target.Url, target.IsAutoLink ? null : LinkText(i));
+            }
+            _linkDecisions = decisions;
+            _linkDecisionsFor = _content;
+            _linkDecisionsContext = _context;
+        }
+        return _linkDecisions[link];
+    }
+
+    private string LinkText(int link)
+    {
+        var sb = new StringBuilder();
+        foreach (var span in _content.Spans)
+        {
+            if (span.LinkIndex == link)
+            {
+                sb.Append(_content.Text.AsSpan(span.Start, span.Length));
+            }
+        }
+        return sb.ToString().Replace(InlineObject.Placeholder.ToString(), "", StringComparison.Ordinal);
     }
 
     protected override void OnPointerMoved(PointerEventArgs e)
@@ -610,6 +774,14 @@ public sealed class TextSegmentView : Control, ISelectableSegment
         var position = e.GetPosition(this);
         var link = LinkAt(position);
         var clickable = link >= 0 || ComponentAt(position) is not null || ImageAt(position, out _) is { Status: not Images.ImageLoadStatus.Blocked };
+        if (_context?.Services.Sources is not null)
+        {
+            UpdateCard(position);
+        }
+        if (link != _hoverLink)
+        {
+            RaiseEvent(new LinkHoveredEventArgs(LinkHoveredEvent, this, link >= 0 ? _content.Links[link].Url : null));
+        }
         if (link != _hoverLink || clickable != _hoverClickable)
         {
             _hoverLink = link;
@@ -621,6 +793,14 @@ public sealed class TextSegmentView : Control, ISelectableSegment
     protected override void OnPointerExited(PointerEventArgs e)
     {
         base.OnPointerExited(e);
+        if (_card is not null || _cardTimer is not null)
+        {
+            ScheduleCard(null, null);
+        }
+        if (_hoverLink >= 0)
+        {
+            RaiseEvent(new LinkHoveredEventArgs(LinkHoveredEvent, this, null));
+        }
         _hoverLink = -1;
         _hoverClickable = false;
         Cursor = Cursor.Default;
@@ -653,7 +833,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
                     {
                         // 链接中的图片（徽章、赞助商标志）：打开链接
                         var target = _content.Links[imageLink];
-                        RaiseEvent(new LinkClickedEventArgs(LinkClickedEvent, this, target.Url, target.Title));
+                        RaiseEvent(new LinkClickedEventArgs(LinkClickedEvent, this, target.Url, target.Title, LinkDecisionFor(imageLink) == LinkDecision.Confirm));
                         break;
                     }
                 case Images.ImageLoadStatus.Loaded when slot.Image is { } loaded:
@@ -670,7 +850,13 @@ public sealed class TextSegmentView : Control, ISelectableSegment
         }
         if (ComponentAt(position) is { } component)
         {
-            RaiseEvent(new ComponentClickedEventArgs(ComponentClickedEvent, this, component.Name, component.Attributes));
+            var clicked = new ComponentClickedEventArgs(ComponentClickedEvent, this, component.Name, component.Attributes);
+            RaiseEvent(clicked);
+            // 宿主未处理时：引用打开来源地址，<cite href> 打开链接
+            if (!clicked.Handled && ComponentUrl(component.Name, component.Attributes) is { } url)
+            {
+                OpenUrl(url, null);
+            }
             e.Handled = true;
             return;
         }
@@ -678,7 +864,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
         if (link >= 0)
         {
             var target = _content.Links[link];
-            RaiseEvent(new LinkClickedEventArgs(LinkClickedEvent, this, target.Url, target.Title));
+            RaiseEvent(new LinkClickedEventArgs(LinkClickedEvent, this, target.Url, target.Title, LinkDecisionFor(link) == LinkDecision.Confirm));
             e.Handled = true;
         }
     }
@@ -746,6 +932,11 @@ public sealed class TextSegmentView : Control, ISelectableSegment
                     break;
                 }
                 style = span.Style;
+                // 被链接策略禁止的链接显示为次要颜色的普通文字
+                if (span.LinkIndex >= 0 && style.HasFlag(InlineStyle.Link) && _owner.LinkDecisionFor(span.LinkIndex) == LinkDecision.Block)
+                {
+                    style = (style & ~InlineStyle.Link) | InlineStyle.IncompleteLink;
+                }
                 component = span.ComponentIndex;
                 textStyle = span.TextStyleIndex;
                 end = Math.Min(end, span.End);
@@ -1003,11 +1194,20 @@ public sealed class TextSegmentView : Control, ISelectableSegment
     }
 }
 
-public sealed class LinkClickedEventArgs(RoutedEvent routedEvent, object source, string url, string? title) : RoutedEventArgs(routedEvent, source)
+public sealed class LinkClickedEventArgs(RoutedEvent routedEvent, object source, string url, string? title, bool requiresConfirmation = false) : RoutedEventArgs(routedEvent, source)
 {
     public string Url { get; } = url;
 
     public string? Title { get; } = title;
+
+    /// <summary>链接策略要求宿主先请用户确认（<see cref="LinkPolicy.RequireConfirmation"/> 或链接文字与地址不符）。</summary>
+    public bool RequiresConfirmation { get; } = requiresConfirmation;
+}
+
+/// <summary>指针进入 / 离开链接。离开时 <see cref="Url"/> 为 null。宿主可在状态栏显示真实地址。</summary>
+public sealed class LinkHoveredEventArgs(RoutedEvent routedEvent, object source, string? url) : RoutedEventArgs(routedEvent, source)
+{
+    public string? Url { get; } = url;
 }
 
 public sealed class ComponentClickedEventArgs(RoutedEvent routedEvent, object source, string name, ComponentAttributes attributes) : RoutedEventArgs(routedEvent, source)

@@ -64,6 +64,23 @@ Raw HTML in Markdown (README style) is converted into the block model, so it sup
 - **Unsupported elements**: HTML containing an unknown element (including `script`, `style`, `iframe`) is shown as source and never executed. Comments are hidden.
 - **Author colours**: `MarkdownServices.HtmlColors` controls them. The default is `Readable`: author colours are used, but the theme colour replaces any colour without enough contrast against its background. `Exact` and `Ignore` are also available.
 
+## Chat features
+
+- **Link policy**: `MarkdownServices.Links` (a `LinkPolicy`).
+  - By default only `https`, `http` and `mailto` links are allowed. Relative links and `#anchors` are passed to the host.
+  - Blocked links (`javascript:`, `file:`, `data:`, unknown schemes) render as plain text.
+  - `LinkClickedEventArgs.RequiresConfirmation` is set when `RequireConfirmation` is on, or when the link text looks like a different URL (for example `[https://github.com](https://evil.example)`).
+  - `TextSegmentView.LinkHoveredEvent` reports the real URL, for showing in a status bar.
+- **Citations**: set `MarkdownServices.Sources` (an `ISourceProvider`, for example `DictionarySourceProvider`).
+  - Hovering `<Citation id="1"/>` shows a source card with the title, site and snippet; clicking it opens the URL.
+  - An unhandled click on a citation or a `<cite href>` raises `LinkClicked`.
+- **Code blocks**: `MarkdownServices.CodeBlocks` (a `CodeBlockOptions`).
+  - `ShowLineNumbers`: numbering starts at `#L10` when the fence info gives a start line.
+  - Collapsing: `CollapseAfterLines` (default 40) and `CollapsedLines` (default 20). Blocks that were streamed are never collapsed.
+  - `ExpandText` and `CollapseText` set the labels.
+  - Download: `ShowDownload` toggles the button. `Save` overrides the default save dialog. The suggested file name comes from the fence path or the language.
+  - `diff` and `patch` blocks get coloured backgrounds for added and removed lines.
+
 ## Core usage
 
 ```csharp

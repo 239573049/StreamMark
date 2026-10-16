@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "permissions": {
+    "allow": [
+      "Bash(cd /Users/token/code/StreamMark && git rev-parse --short HEAD && echo \"---STATUS---\" && git status --porcelain && echo \"---AGENTS---\" && ls -la AGENTS.md .agents 2>&1 | head -30)",
+      "Bash(cd /Users/token/code/StreamMark && git ls-files | head -200 && echo \"---COUNT---\" && git ls-files | wc -l)"
+    ],
+    "ask": [],
+    "deny": []
+  }
+}

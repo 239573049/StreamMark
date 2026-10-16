@@ -86,6 +86,7 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
         // 透明背景：空白处也能开始拖拽选择
         Background = Brushes.Transparent;
         _selection = new SelectionController(this);
+        AddHandler(CodeBlockView.ExpandedChangedEvent, OnCodeExpandedChanged);
         ResourcesChanged += (_, _) => InvalidateStyle();
         ActualThemeVariantChanged += (_, _) => InvalidateStyle();
     }
@@ -284,7 +285,7 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
                 {
                     case DiffKind.Insert:
                         {
-                            var count = ChunkCount(op.Block!);
+                            var count = ChunkCount(op.Block!, context);
                             for (var c = 0; c < count; c++)
                             {
                                 var row = new Row(state) { Block = op.Block, Chunk = c, ChunkCount = count };
@@ -296,43 +297,8 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
                             break;
                         }
                     case DiffKind.Update:
-                        {
-                            var oldCount = state.Slots[op.Index];
-                            var count = ChunkCount(op.Block!);
-                            // 分段数变化：增删末尾的行，其余行原地更新
-                            for (var c = count; c < oldCount; c++)
-                            {
-                                Unrealize(state.Rows[rowStart + count]);
-                                state.Rows.RemoveAt(rowStart + count);
-                            }
-                            for (var c = oldCount; c < count; c++)
-                            {
-                                state.Rows.Insert(rowStart + c, new Row(state));
-                            }
-                            for (var c = 0; c < count; c++)
-                            {
-                                var updated = state.Rows[rowStart + c];
-                                updated.Block = op.Block;
-                                updated.Chunk = c;
-                                updated.ChunkCount = count;
-                                updated.Measured = false;
-                                if (updated.View is BlockView view)
-                                {
-                                    UpdateView(updated, view, context);
-                                }
-                                else
-                                {
-                                    updated.Height = Estimate(updated, context);
-                                }
-                            }
-                            state.Slots[op.Index] = count;
-                            if (count != oldCount)
-                            {
-                                _rowsDirty = true;
-                            }
-                            _topsDirty = true;
-                            break;
-                        }
+                        UpdateBlockRows(state, op.Index, rowStart, op.Block!, context);
+                        break;
                     case DiffKind.Remove:
                         {
                             var count = state.Slots[op.Index];
@@ -445,6 +411,73 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
         return Math.Max(style.LineHeight, height);
     }
 
+    // 一个顶层块的行原地更新；分段数变化时增删末尾的行
+    private void UpdateBlockRows(EntryState state, int index, int rowStart, MarkdownBlock block, RenderContext context)
+    {
+        var oldCount = state.Slots[index];
+        var count = ChunkCount(block, context);
+        for (var c = count; c < oldCount; c++)
+        {
+            Unrealize(state.Rows[rowStart + count]);
+            state.Rows.RemoveAt(rowStart + count);
+        }
+        for (var c = oldCount; c < count; c++)
+        {
+            state.Rows.Insert(rowStart + c, new Row(state));
+        }
+        for (var c = 0; c < count; c++)
+        {
+            var updated = state.Rows[rowStart + c];
+            updated.Block = block;
+            updated.Chunk = c;
+            updated.ChunkCount = count;
+            updated.Measured = false;
+            if (updated.View is BlockView view)
+            {
+                UpdateView(updated, view, context);
+            }
+            else
+            {
+                updated.Height = Estimate(updated, context);
+            }
+        }
+        state.Slots[index] = count;
+        if (count != oldCount)
+        {
+            _rowsDirty = true;
+        }
+        _topsDirty = true;
+    }
+
+    // 代码块展开 / 折叠：按新的分段数重建该块的行
+    private void OnCodeExpandedChanged(object? sender, global::Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (e.Source is not CodeBlockView view)
+        {
+            return;
+        }
+        for (var i = 0; i < _entries.Count; i++)
+        {
+            var state = _entries[i];
+            var rowStart = 0;
+            for (var b = 0; b < state.Slots.Count; b++)
+            {
+                var count = state.Slots[b];
+                for (var c = 0; c < count; c++)
+                {
+                    if (ReferenceEquals(state.Rows[rowStart + c].View, view))
+                    {
+                        CaptureAnchor();
+                        UpdateBlockRows(state, b, rowStart, state.Rows[rowStart].Block!, ContextFor(i, state));
+                        InvalidateMeasure();
+                        return;
+                    }
+                }
+                rowStart += count;
+            }
+        }
+    }
+
     // 样式变化后已实例化的视图需要按新上下文重新应用
     private void RefreshRealizedContexts(EntryState state, RenderContext context)
     {
@@ -464,9 +497,10 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
 
     public const int LinesPerChunk = 128;
 
-    private static int ChunkCount(MarkdownBlock block)
+    private static int ChunkCount(MarkdownBlock block, RenderContext context)
     {
-        if (block is not CodeBlock code)
+        // 折叠的代码块只显示前若干行：不分段
+        if (block is not CodeBlock code || CodeBlockView.ShouldCollapse(code, context, block.Key, out _))
         {
             return 1;
         }

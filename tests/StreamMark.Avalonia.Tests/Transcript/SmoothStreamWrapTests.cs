@@ -37,7 +37,7 @@ public sealed class SmoothStreamWrapTests
             var segment = view.Panel.GetVisualDescendants().OfType<TextSegmentView>().Single();
             Assert.Equal(text, segment.Content.Text);
             // 700px 宽度下这一句放得下一行
-            Assert.Equal(1, segment.Layout!.TextLines.Count);
+            Assert.Single(segment.Layout!.TextLines);
             window.Close();
         });
     }

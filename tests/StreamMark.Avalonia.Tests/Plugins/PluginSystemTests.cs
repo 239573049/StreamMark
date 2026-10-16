@@ -147,10 +147,10 @@ public sealed class PluginSystemTests
             Assert.False(collapsibles[0].IsOpen);
             Assert.True(collapsibles[1].IsOpen);
 
-            // 头部操作：只出现在 cs 代码块上
+            // 头部操作：只出现在 cs 代码块上（复制、换行、下载、插件操作，加上隐藏的折叠栏按钮）
             var code = children.OfType<CodeBlockView>().Single();
             var actionButtons = code.GetVisualChildren().OfType<IconButton>().Count();
-            Assert.Equal(3, actionButtons);
+            Assert.Equal(5, actionButtons);
 
             // 复制：组件输出纯文本
             view.SelectionController.SelectAll();

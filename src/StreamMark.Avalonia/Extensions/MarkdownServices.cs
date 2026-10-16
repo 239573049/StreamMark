@@ -30,13 +30,22 @@ public sealed class MarkdownServices
 
     private static ImagePipeline? s_defaultImages;
 
+    /// <summary>HTML 中作者指定的颜色如何处理（默认：按作者颜色，但与背景对比度不足时改用主题颜色）。</summary>
+    public HtmlColorMode HtmlColors { get; init; } = HtmlColorMode.Readable;
+
+    /// <summary>链接安全策略：允许的协议、确认要求。</summary>
+    public LinkPolicy Links { get; init; } = LinkPolicy.Default;
+
+    /// <summary>引用来源（<c>&lt;Citation id&gt;</c> 悬停卡片与点击），没有时只显示标签。</summary>
+    public ISourceProvider? Sources { get; init; }
+
+    /// <summary>代码块选项：行号、折叠、下载。</summary>
+    public CodeBlockOptions CodeBlocks { get; init; } = CodeBlockOptions.Default;
+
     /// <summary>
     /// 图片管线（加载策略、内存 / 磁盘缓存）。默认是进程共享的仅内存缓存实例；
     /// 宿主通常自建一个带磁盘缓存目录的实例（并负责释放）。
     /// </summary>
-    /// <summary>HTML 中作者指定的颜色如何处理（默认：按作者颜色，但与背景对比度不足时改用主题颜色）。</summary>
-    public HtmlColorMode HtmlColors { get; init; } = HtmlColorMode.Readable;
-
     public ImagePipeline Images { get; init; } = s_defaultImages ??= new ImagePipeline();
 
     /// <summary>

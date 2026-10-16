@@ -1,0 +1,117 @@
+---
+module: avalonia-text-rendering
+sources: ["src/StreamMark.Avalonia/Rendering/**", "src/StreamMark.Avalonia/MarkdownView.cs", "src/StreamMark.Avalonia/MarkdownStream.cs", "src/StreamMark.Avalonia/MarkdownResourceKeys.cs", "src/StreamMark.Avalonia/MarkdownResourceAlias.cs", "src/StreamMark.Avalonia/Themes/**"]
+commit: 44a8f5a
+updated: 2026-10-16
+---
+# Avalonia 块视图与文本自绘层
+
+把 Core 的块模型与文档快照画成 Avalonia 控件：每个顶层块一个自绘 `BlockView`，每个文本片段一个 `TextLayout`（行内样式走自定义 `ITextSource`，公式 / 图片 / 复选框是 `DrawableTextRun`），`DocumentPresenter` 按快照差异增删改这些视图，主题色由 `MarkdownStyle` 一次性解析成资源快照下发。
+
+**不负责：** Markdown 解析与块模型（`core-parsing-and-model`，`src/StreamMark.Core/Model/`、`src/StreamMark.Core/Parsing/`）；文档快照与差异算法（`core-streaming`，`src/StreamMark.Core/Streaming/SnapshotDiff.cs:SnapshotDiff.Compute`）；选区坐标、命中与复制（`avalonia-selection`，`src/StreamMark.Avalonia/Selection/`）；会话虚拟化与行回收（`avalonia-transcript`，`src/StreamMark.Avalonia/Transcript/TranscriptPanel.cs`）；图片的取数 / 解码 / 缓存（`avalonia-images`，`src/StreamMark.Avalonia/Images/ImagePipeline.cs`，本层只用 `Rendering/ImageSlot.cs` 持有句柄）；插件注册与块视图注册表（`avalonia-plugin-system`，`src/StreamMark.Avalonia/Plugins/PluginRegistry.cs`）；RaTeX / TextMate / Mermaid 的具体实现（`avalonia-extensions`）与 AtomUI 令牌（`theme-atomui`）。
+
+## Entry points
+| Symbol | File | Role |
+|---|---|---|
+| `MarkdownView` | `src/StreamMark.Avalonia/MarkdownView.cs:16` | 单文档控件（非虚拟化）：`Markdown` / `Document` / `Stream` 三个输入属性，持有 `DocumentPresenter` 与 `SelectionController` |
+| `MarkdownView.ApplyLatest` | `src/StreamMark.Avalonia/MarkdownView.cs:159` | 把 `EffectiveDocument.Latest` 交给 presenter；动画帧回调、测试与外部同步刷新都走这里 |
+| `DocumentPresenter.Apply` | `src/StreamMark.Avalonia/Rendering/DocumentPresenter.cs:30` | 应用一份 `DocumentSnapshot`：按 `SnapshotDiff` 插入 / 更新 / 删除顶层视图，维护末尾片段标记 |
+| `BlockViewFactory.Create` | `src/StreamMark.Avalonia/Rendering/BlockViewFactory.cs:8` | 块模型 → 块视图：插件组件 / 插件围栏视图优先，其余按内建分支 |
+| `TextSegmentView.Set` | `src/StreamMark.Avalonia/Rendering/TextSegmentView.cs:92` | 设置片段内容与外观；内容只追加且样式不变时保留差异点之前的整形结果 |
+| `TextSegmentView`（`Render`） | `src/StreamMark.Avalonia/Rendering/TextSegmentView.cs:430` | 自绘：选区矩形 → 渐显 / 正常绘制 → 删除线 → 流式光标 |
+| `MarkdownStyle.Resolve` | `src/StreamMark.Avalonia/Rendering/MarkdownStyle.cs:66` | 从控件可见资源一次性解析不可变样式快照 |
+| `MarkdownStream` | `src/StreamMark.Avalonia/MarkdownStream.cs:13` | 网络分片 → `StreamPacer` → `StreamingDocument`，并记录渐显时间；任意线程可 `Push` / `Complete` |
+| `MarkdownResourceKeys` | `src/StreamMark.Avalonia/MarkdownResourceKeys.cs:7` | 全部 `Md.*` 资源键的声明处 |
+| `StreamMarkTheme` | `src/StreamMark.Avalonia/Themes/StreamMarkTheme.axaml:1` | 默认主题字典（Light / Dark 两套画刷 + 等宽字体 / 间距 / 圆角） |
+
+## Key types and functions
+| Symbol | File | Role |
+|---|---|---|
+| `BlockView` | `src/StreamMark.Avalonia/Rendering/BlockView.cs:13` | 块视图基类：`Update(context, block, topKey, ref segment)`（`internal`，:25）→ `OnUpdate`；`LastSegment()` / `Segments()` 供末尾标记与选区命中；`KeyFor` 按阅读顺序分配片段号（:43） |
+| `StackBlockView` | `src/StreamMark.Avalonia/Rendering/BlockView.cs:61` | 纵向排布的容器视图：`UpdateChildren` 按位置复用子视图（类型相同则 `Update`，否则替换） |
+| `TextBlockView` / `ThematicBreakBlockView` | `src/StreamMark.Avalonia/Rendering/BlockView.cs:159` / `:225` | 段落 / 标题 / HTML 块（一个 `TextSegmentView`，H1/H2 下方画分隔线）；分隔线（固定高 17） |
+| `CodeBlockView` + `CodeTextView` | `src/StreamMark.Avalonia/Rendering/CodeBlockView.cs:22` / `:256` | 代码块头（语言标题、插件操作、换行、复制）+ 逐行排版缓存的代码区；`SetChunk`（:73）只显示某一窗口的行，偏移保持全局 |
+| `CodeBlockState` | `src/StreamMark.Avalonia/Rendering/CodeBlockState.cs:11` | 块共享状态：代码、行起点、增量高亮会话；`For(context, blockKey, language)`（:48）从 `BlockStateStore` 取，语言 / 高亮器 / 明暗变化时重建 |
+| `TableBlockView` | `src/StreamMark.Avalonia/Rendering/TableBlockView.cs:17` | 自定义列宽布局（不用 `Grid`），列宽自然宽度 → 按比例收缩 → 横向滚动；悬停显示“复制为 Markdown” |
+| `MathBlockView` | `src/StreamMark.Avalonia/Rendering/MathBlockView.cs:15` | 块级公式，`ISelectableSegment` 自身即片段；排版失败时保留上一次成功结果，闭合后仍失败则退回源码 |
+| `DiagramBlockView` | `src/StreamMark.Avalonia/Rendering/DiagramBlockView.cs:17` | 图表（如 Mermaid）后台渲染 + 静态 LRU 缓存 + 图表 / 源码切换，渲染前与失败时显示源码 |
+| `HtmlBoxBlockView` + `HtmlPaint` | `src/StreamMark.Avalonia/Rendering/HtmlBoxBlockView.cs:11` / `HtmlPaint.cs:9` | HTML 盒子：外边距 / 边框 / 背景 / 宽度，文字样式经 `RenderContext.WithHtml` 下传；`HtmlPaint` 处理作者颜色的对比度 |
+| `QuoteBlockView` / `AlertBlockView` / `ListBlockView` / `ListItemBlockView` / `FootnotesBlockView` / `DefinitionListBlockView` | `src/StreamMark.Avalonia/Rendering/ContainerViews.cs:12` / `:29` / `:100` / `:201` / `:286` / `:330` | 引用、GitHub 提示块、列表（项目符号按嵌套深度）、列表项（符号 / 复选框与首行基线对齐）、脚注（转成有序 `ListBlock`）、定义列表 |
+| `RenderContext` | `src/StreamMark.Avalonia/Rendering/RenderContext.cs:12` | 一个文档共享的渲染上下文：`Style` / `Services` / `Selection` / `Entry` / `Streaming` / `State` / `ImageBaseUri` / `Inherited` |
+| `StreamingState` | `src/StreamMark.Avalonia/Rendering/StreamingState.cs:7` | 渐显与光标状态：`RecordReveal`（:29）记录每批文本的显示时间，`GetFadingTail`（:58）返回仍在渐显的末尾字符数与首末不透明度 |
+| `InlineTextSource`（`TextSegmentView` 私有嵌套） | `src/StreamMark.Avalonia/Rendering/TextSegmentView.cs:687` | `ITextSource` 实现：按 span / 对象切分 run、解析字重字形与回退字体、生成 `DrawableTextRun` |
+| `DrawableTextRun` 家族 | `src/StreamMark.Avalonia/Rendering/InlineRuns.cs:18` / `:34` / `:69` / `:135` | 行内公式、独立排版的文字对象（公式源码 / 图片替代文字）、行内图片（骨架 / 标签 / 缩放）、任务复选框 |
+| `IconButton` + `MarkdownIcons` | `src/StreamMark.Avalonia/Rendering/IconButton.cs:12` / `:121` | 自绘小图标按钮（不依赖宿主 Button 模板）与 16×16 线图标 |
+| `DocumentPresenter` | `src/StreamMark.Avalonia/Rendering/DocumentPresenter.cs:10` | `internal`；`_views`（顶层视图列表）、`Applied`（已应用快照）、`_tail`（末尾片段） |
+| `ImageSlot` | `src/StreamMark.Avalonia/Rendering/ImageSlot.cs:12` | 一个视图中一张图片的状态与缓存句柄（`Ensure` / `Retry` / `Approve` / `Dispose`） |
+
+## Dependencies
+- Uses: `core-parsing-and-model` via 块类型（`ParagraphBlock` / `CodeBlock` / `TableBlock` / `HtmlBoxBlock`…）与 `InlineContent` / `InlineStyle` / `InlineObject` — `src/StreamMark.Avalonia/Rendering/BlockViewFactory.cs:91`
+- Uses: `core-streaming` via `DocumentSnapshot` + `SnapshotDiff.Compute`（`DiffKind.Insert/Update/Remove`）与 `DocumentSnapshot.IsComplete` — `src/StreamMark.Avalonia/Rendering/DocumentPresenter.cs:34`、`src/StreamMark.Core/Streaming/SnapshotDiff.cs:16`
+- Uses: `core-streaming`（节奏控制器）via `StreamPacer` 与 `StreamingDocument.Append/Complete` — `src/StreamMark.Avalonia/MarkdownStream.cs:22`、`:55`
+- Uses: `avalonia-selection` via `SelectionModel` / `SelectionController` / `ISelectableSegment` / `SegmentKey` — `src/StreamMark.Avalonia/Rendering/TextSegmentView.cs:438`、`src/StreamMark.Avalonia/Selection/TextPoint.cs:33`
+- Uses: `avalonia-images` via `ImagePipeline.Ensure` / 句柄租约 — `src/StreamMark.Avalonia/Rendering/ImageSlot.cs:41`、`src/StreamMark.Avalonia/Rendering/TextSegmentView.cs:393`
+- Uses: `avalonia-plugin-system` via `context.Plugins`（`TryGetBlockComponent` / `FindFenceView` / `FindInlineComponent` / `BlockActions` / `Highlighter` / `Math`）与 `BlockStateStore` — `src/StreamMark.Avalonia/Rendering/BlockViewFactory.cs:13`、`src/StreamMark.Avalonia/Plugins/BlockStateStore.cs:8`
+- Uses: `avalonia-extensions` via `IMathRenderer.Layout`、`ISyntaxHighlighter`（`CodeBlockState`）、`IDiagramRenderer.RenderAsync` — `src/StreamMark.Avalonia/Rendering/MathBlockView.cs:40`、`src/StreamMark.Avalonia/Rendering/DiagramBlockView.cs:114`
+- Uses: `core-highlighting`（`HighlightToken` / `HighlightThemeKind`）— `src/StreamMark.Avalonia/Rendering/CodeBlockView.cs:419`、`src/StreamMark.Avalonia/Rendering/MarkdownStyle.cs:43`
+- Used by: `avalonia-transcript` via `BlockViewFactory.Create/CanReuse`、`MarkdownStyle.Resolve`、`CodeBlockView.SetChunk`、`TextSegmentView.IsDocumentTail` 与 `view.CurrentContext` — `src/StreamMark.Avalonia/Transcript/TranscriptPanel.cs:495`、`:488`、`:231`、`:782`、`:460`
+- Used by: `theme-atomui` / 宿主主题 via 覆盖 `Md.*` 资源并把值写成 `MarkdownResourceAlias(SharedTokenKind.*)` — `src/StreamMark.Theme.AtomUI/AtomUIMarkdownTheme.cs:34`
+- Used by: `tests` via `TextSegmentView.UseRunCache` / `Content` / `Layout`、`MarkdownView.Snapshot` / `ApplyLatest`、`HeadlessApp` — `tests/StreamMark.Avalonia.Tests/Rendering/RunCacheBenchTests.cs:16`、`tests/StreamMark.Avalonia.Tests/Rendering/MarkdownViewSnapshotTests.cs:31`
+
+## State it owns
+- `TextSegmentView._runCache`（`TextSegmentView.cs:32`）：Avalonia 12 的 `TextRunCache`（`[Unstable]`，编译期是 CS0618），**只在本文件**使用，四处都在 `#pragma warning disable CS0618` 内（:30、:154、:290、:300、:361）。失效规则：样式 / 上下文变化或非追加时 `Invalidate()`（:157）；只追加时按 `FirstDifference`（:181）算差异点，再从**差异点所在段落的起点**`InvalidateFrom(paragraphStart)`（:164）；可用宽度变化且片段含宽度相关对象（图片 / 组件）时整体 `Invalidate()`（:288）；`OnResourceLoaded`（图片等异步资源就绪，:359）整体 `Invalidate()`。`TextSegmentView.UseRunCache`（:36，`internal`）可整体关掉缓存供测试 / 基准对比。
+- `TextSegmentView._layout` / `_layoutWidth`：派生排版对象，宽度或对齐变化时 `Dispose` 后重建；`_fullRebuild` / `_runCacheWidth`（:322 / :325）决定“本次用到的图片”列表是否完整，只有整体重建时才 `ReleaseUnusedImages()`（:312）。
+- `DocumentPresenter._views` / `Applied` / `Context` / `_tail`（`DocumentPresenter.cs:12-15`）：视图列表是 `MarkdownView` 视觉子级的权威副本，`Applied` 是下一次 `SnapshotDiff.Compute` 的基准；`_tail` 是当前带 `IsDocumentTail` 标记的片段。
+- `MarkdownStyle`（`MarkdownStyle.cs:15`）：不可变样式快照，只读；主题变体、`ResourcesChanged`、`Services` / `ImageBaseUri` 变化时由 `MarkdownView` 置空 `_context` 并重建（`MarkdownView.cs:64`、`:44`、`:172`），是宿主资源的**派生副本**，不反向写回。
+- `StreamingState`（`StreamingState.cs:7`）：渐显时间队列（加锁），由 `MarkdownStream` 在界面线程写入（`MarkdownStream.cs:52`、`:99`），由文档末尾片段读取；`MarkdownStream.Complete` 时 `Document.Complete()` 并 `IsActive = false`（`MarkdownStream.cs:114`）。
+- `CodeBlockState`（`CodeBlockState.cs:11`）：代码、行起点索引、高亮会话与结果，存在 `BlockStateStore`（键 `"code.state"`，`CodeBlockState.cs:52`），进程内后台任务计算、界面线程发布（:142）；视图回收重建、长代码分段都复用它。`BlockStateStore` 还保存 `code.wrap`（`CodeBlockView.cs:26`）与 `diagram.code`（`DiagramBlockView.cs:43`）。
+- 静态缓存：`DiagramCache`（`DiagramBlockView.cs:250`，32 项 LRU，键 = 语言 + 明暗 + 代码）、`BrushCache`（`CodeBlockView.cs:621`，按 ARGB）、`HtmlPaint.s_brushes`（`HtmlPaint.cs:11`，按 `CssColor`）。
+- 视图内的图片句柄：`TextSegmentView._images` / `_usedImages`（`TextSegmentView.cs:369` / `:379`），离开可视树时全部 `Dispose` 并重新排版（:239）。
+- 计时 / 帧状态：`TextSegmentView._frameRequested`（渐显期间每帧 `InvalidateVisual`，:522）、`MarkdownView._frameRequested`（快照就绪合帧，`MarkdownView.cs:140`）、`CodeBlockView._copiedTimer`（复制后的图标回退，:158）、`DiagramBlockView._cts`（取消上一次渲染，:83）。时钟是 `StreamClock.Now`（`InlineRuns.cs:10`，基于 `Stopwatch`）。
+- `MarkdownView._ownDocument`（`MarkdownView.cs:33`）：只设置 `Markdown` 时自建的 `StreamingDocument`，设置 `Stream` / `Document` 时置空。
+
+## Contracts it exposes
+- `Md.*` 资源键：声明在 `MarkdownResourceKeys`（`MarkdownResourceKeys.cs:9-31`），共 20 个；默认值在 `MarkdownStyle.Resolve` 的 `Get<T>(key, fallback)`（`MarkdownStyle.cs:70`）与 `Themes/StreamMarkTheme.axaml` 的 Light / Dark 字典（:9、:22，`Md.FontFamily` / `Md.FontSize` / `Md.LineHeight` 故意不设，回落到控件继承的 `TextElement` 值，`MarkdownStyle.cs:98`）。值为 `MarkdownResourceAlias` 时从控件自身再查目标键，最多 4 层（:77）；值为 `Color` 时自动转 `ImmutableSolidColorBrush`（:88）。
+- `MarkdownView` 输入：`Markdown`（静态文本，内部 `Load` 一份自建文档，`MarkdownView.cs:101`）、`Document`（外部 `StreamingDocument`）、`Stream`（`MarkdownStream`，优先，`MarkdownView.cs:99`）。三者任一变化都重置上下文、清空 presenter 与块状态、清空选区（:101）。
+- `MarkdownStream` 线程约定：`Push` / `Complete` / `Flush` 可在任意线程调用，内部 `Dispatcher.UIThread.Post`（`MarkdownStream.cs:42`、`:64`、`:83`）；`_pacer` 与文档只在界面线程推进；`Completed` 在流（含平滑积压）全部结束时触发（:119）。
+- `BlockView.Update` 契约（`BlockView.cs:25`）：`internal`，只由 `DocumentPresenter` / `StackBlockView.UpdateChildren` 调用；必须按阅读顺序对每个文本片段调用一次 `KeyFor(context, topKey, ref segment)`，顺序要与 `Selection/BlockText.Segments` 的遍历一致（`BlockView.cs:11` 注释、`Selection/BlockText.cs:32`）；`LastSegment()` 必须返回深度优先的最后一个片段（否则渐显 / 光标不显示）。
+- `DocumentPresenter` 的回调契约：`insert(index, view)` / `remove(index, view)` 的 `index` 是**视图列表中的位置**，`MarkdownView` 用它同步 `LogicalChildren` / `VisualChildren`（`MarkdownView.cs:50`）；`Apply` 返回“有无变化”，实际 `MarkdownView` 未使用返回值。
+- `TextSegmentView`：`Content`（:53）、`Layout`（:59）、`Key`（:48）、`IsDocumentTail`（:51）、`LinkClicked` / `ImageClicked` / `ComponentClicked` 冒泡事件（:62 / :72 / :82）。
+- `BlockViewFactory.CanReuse`（`BlockViewFactory.cs:40`）：类型一致即可复用；最近一次上下文变化（`contextChanged`）会触发 `DocumentPresenter.Restyle`（`DocumentPresenter.cs:83`），例如新增图表渲染器后代码块要变成图表视图。
+
+## How to extend
+- To add a 新的块视图（新块类型或新的内建渲染方式）：先在 `BlockViewFactory.ViewTypeFor`（`BlockViewFactory.cs:91`）加分支并在 `CreateBuiltIn`（:22）映射到新视图类，再在 `CanReuseBuiltIn`（:56）加 `view switch` 分支（用于复用 / 类型切换），最后按 `BlockView`（`BlockView.cs:13`）实现 `OnUpdate` / `MeasureOverride` / `ArrangeOverride` / `Render`，容器类视图继承 `StackBlockView`（:61）复用 `UpdateChildren`。漏掉 `CanReuseBuiltIn` 的后果：`CanReuse` 落到 `_ => false`，每次快照更新都重建视图——输入焦点、块状态与滚动位置丢失（`BlockStateStore` 只能保住 `Get/Set` 过的东西），并且 `DocumentPresenter.Restyle` 每帧替换全部视图。若新块类型要参与选区，还要同步 `Selection/BlockText.Segments` 的遍历分支与其顺序一致。
+- To add 插件贡献的块视图（HTML 组件 / 按语言替换的围栏视图）：走 `context.Plugins.TryGetBlockComponent` / `FindFenceView`（`BlockViewFactory.cs:13`、`:15`），视图的 `Update` 复用规则在 `CanReuse` 的组件 / 围栏分支（:43、:47）；`ComponentBlock` 无注册时回落到 `Plugins.ComponentContainerView`。
+- To add 一个新的 `Md.*` 主题资源键：① 在 `MarkdownResourceKeys`（`MarkdownResourceKeys.cs:7`）加常量；② 在 `MarkdownStyle` 加 `required` 属性（`MarkdownStyle.cs:17-37`）并在 `Resolve` 里 `Get<T>(键, 默认值)`（:95-121，需要 `Color→IBrush` 自动转换就用 `IBrush` 类型参数）；③ 在 `Themes/StreamMarkTheme.axaml` 的 Light（:9）与 Dark（:22）字典各加一条（不随明暗变化的键放主题字典之外，如 `Md.BlockSpacing` :37）；④ 在 `StreamMark.Theme.AtomUI` 等宿主主题里选择性地把值写成 `MarkdownResourceAlias`（`src/StreamMark.Theme.AtomUI/AtomUIMarkdownTheme.cs:34`），并加测试。漏掉 ③ 的后果：`TryFindResource` 失败、静默用 `MarkdownStyle` 里的硬编码回退值（`MarkdownStyle.cs:72`），宿主改了资源也不生效。测试模板见 `tests/StreamMark.Avalonia.Tests/Rendering/StyleKeysTests.cs:12`（断言回退值与覆盖生效）。
+- To add 一种新的行内对象渲染：在 `InlineTextSource.CreateObjectRun`（`TextSegmentView.cs:867`）加分支，新 run 继承 `DrawableTextRun`（参照 `InlineRuns.cs:18-167`），并让 `FirstDifference` 的 `Objects` 比较能识别它的偏移变化（:204）。
+
+## Invariants and traps
+- `_runCache.InvalidateFrom(i)` 必须传入**差异点所在段落的起点**，不是差异点本身 — 缓存以换行符分隔的段落为单位、按段落起点存放整段的整形结果，从差异点失效会复用旧段落（连同段末换行），流式每次追加都变成一次硬换行；回归测试 `SmoothStreamWrapTests` — see `src/StreamMark.Avalonia/Rendering/TextSegmentView.cs:164`。
+- `TextRunCache` 是 Avalonia 12 的 `[Unstable]` 预览 API — 只允许在 `TextSegmentView` 内使用，并用 `#pragma warning disable CS0618` 限定范围；换别的文件用要重新评估（同一快照里 `TextLayout` 也是预览重载）— see `src/StreamMark.Avalonia/Rendering/TextSegmentView.cs:30`。
+- 中文粗体的回退字体必须按**本段字的字重 / 字形**自行解析 — Avalonia 为缺字找回退字体时优先复用“上一段”的回退字体，不检查字重，且 `Typeface(..., Bold)` 在只有中粗（600）的字族上会落回常规字重；所以 `CreateCharacters`（:762）先判主字体是否覆盖字符，缺字才 `TryMatchCharacter`，`HeavyEnough`（:824）依次尝试 700 / 600 / 800 / 900 / 500 取真正够粗的字形 — see `src/StreamMark.Avalonia/Rendering/TextSegmentView.cs:759`。
+- 删除线自绘，不用 `TextDecorations.Strikethrough` — 部分字体（含无头环境的回退字体）缺少删除线度量，装饰线不显示；`DrawStrikethrough`（:469）按每段 `HitTestTextRange` 在 54% 高度画线 — see `src/StreamMark.Avalonia/Rendering/TextSegmentView.cs:966`。
+- 只有文档末尾片段（`IsDocumentTail`，由 `DocumentPresenter.UpdateTail` 或 `TranscriptPanel` 设置）才绘制渐显蒙版与光标 — 非尾部片段即使 `StreamingState` 仍在渐显也不做蒙版，且 `UpdateTail` 每次 `Apply` 都对尾部 `InvalidateVisual()` 以推动下一帧 — see `src/StreamMark.Avalonia/Rendering/DocumentPresenter.cs:102`、`src/StreamMark.Avalonia/Rendering/TextSegmentView.cs:446`。
+- 渐显绘制会把 `TextLayout` 画两遍（实心部分用 `CombinedGeometry` 排除 / 渐显部分用 `PushOpacityMask`）— 蒙版几何按 `Bounds` 与 `layout.WidthIncludingTrailingWhitespace` 取大并额外留 `_fontSize * 2`，改这段要保证两遍几何覆盖同一区域 — see `src/StreamMark.Avalonia/Rendering/TextSegmentView.cs:489`。
+- 固定行高会把整行裁到该高度 — 行内有更高的对象（图片、大公式）时 `HasOverflowingObjects`（:327）会把 `TextLayout` 丢掉并用自然行高重排，因此含对象的片段最多排版两次 — see `src/StreamMark.Avalonia/Rendering/TextSegmentView.cs:302`。
+- 上下文（`RenderContext`）的身份就是“变化”信号 — 样式 / 服务 / 主题变化必须**新建** `RenderContext` 实例（`MarkdownView.CreateContext`，`MarkdownView.cs:169`），`BlockView.Update` 与 `TextSegmentView.Set` 都靠 `ReferenceEquals` 判断 `contextChanged`；原地修改样式对象不会触发任何重排或 `Restyle` — see `src/StreamMark.Avalonia/Rendering/BlockView.cs:27`、`src/StreamMark.Avalonia/Rendering/MarkdownStyle.cs:11`。
+- 片段编号必须在构建期按阅读顺序分配，并与 `BlockText.Segments` 的遍历顺序一致 — 选区坐标是 `(Entry, BlockKey, Segment, Offset)`，顺序错位会造成选区串段 — see `src/StreamMark.Avalonia/Rendering/BlockView.cs:43`、`src/StreamMark.Avalonia/Selection/TextPoint.cs:33`。
+- `KeyFor` 每次调用都会 `segment++`，因此目标块类型变化（例如代码块 → 图表）时不能“两边都先建 key 再选分支”，否则片段号错位 — see `src/StreamMark.Avalonia/Rendering/BlockView.cs:43`。
+- 代码块分段的横向滚动各自独立（已知限制）— `CodeTextView._offsetX` 是每个视图自己的状态，`SetChunk` 只切窗口不共享偏移 — see `src/StreamMark.Avalonia/Rendering/CodeBlockView.cs:73`。
+- `CodeBlockState` 只在界面线程访问（`BlockStateStore` 的约定），后台 `RunHighlight` 回投时必须校验 `ReferenceEquals(session, _session)`，否则重建后的块会收到过期着色 — see `src/StreamMark.Avalonia/Rendering/CodeBlockState.cs:142`。
+- 图片句柄是借用关系：`ReleaseUnusedImages` 只在 `_fullRebuild`（或关缓存）时执行，部分复用缓存的排版不释放，离开可视树则全部 `Dispose` 并重排 — see `src/StreamMark.Avalonia/Rendering/TextSegmentView.cs:311`、`:239`。
+- 代码块的 `CodeTextView` 是“整个代码块”的选区片段，`Segments()` 只返回它；`DiagramBlockView` 显示图表时 `Segments()` 返回空（图表不可选） — see `src/StreamMark.Avalonia/Rendering/DiagramBlockView.cs:237`。
+
+## Tests
+- 无头宿主：`tests/StreamMark.Avalonia.Tests/HeadlessApp.cs:24`。`HeadlessApp.BuildAvaloniaApp`（:26）用 `AppBuilder.Configure<TestApp>().UseSkia().UseHarfBuzz().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false })`，`TestApp.Initialize`（:15）设 `RequestedThemeVariant = Dark` 并加载 Fluent 主题 + `StreamMarkTheme`，程序集级 `[assembly: Xunit.CollectionBehavior(DisableTestParallelization = true)]`（:8）。
+- 用法：`HeadlessApp.Run(async () => {...})`（:55）在界面线程跑异步测试体；需要返回值的用 `HeadlessApp.Session.Dispatch(..., CancellationToken.None)`（`HeadlessApp.Session` :34）；`HeadlessApp.Settle(rounds = 5)`（:65）跑 `Dispatcher.UIThread.RunJobs()` + `AvaloniaHeadlessPlatform.ForceRenderTimerTick()` + `await Task.Delay(20)` 让异步更新落定；`HeadlessApp.Fixture(name)`（:76）读 Core 测试的输出 fixture（csproj 把 `tests/StreamMark.Core.Tests/Fixtures/streaming/*.md` 复制到输出目录）。
+- 截图 / 快照：`HeadlessApp.Save(topLevel, name)`（:44）写 PNG；目录取环境变量 `STREAMMARK_SNAPSHOT_DIR`，默认测试输出目录下的 `snapshots/`（:37；CI 设为 `${{ github.workspace }}/artifacts/snapshots`，`.github/workflows/ci.yml:78`）。快照是给人看的产物，测试只断言结构（例如控件类型、`Bounds.Height`）。
+- 命名模式：测试在 `tests/StreamMark.Avalonia.Tests/`（子目录 `Rendering/`、`Transcript/`、`Images/`、`Math/`、`Mermaid/`、`Plugins/`、`Highlighting/`，另有根下的 `ThemeSnapshotTests.cs`），xUnit v3 + `[Fact]` / `[Theory]`，类名与被测组件同名，测试整体挂 `HeadlessApp.Run`。
+- 本模块最相关的用例：`Rendering/MarkdownViewSnapshotTests.cs`（混合文档渲染各块类型、流式只更新尾部且冻结视图不被重建）、`Rendering/InlineStyleProbeTests.cs`（行内样式 + 中文粗体字重回归）、`Rendering/SelectionAndFadeTests.cs`（跨块选区复制、渐显与光标）、`Rendering/StyleKeysTests.cs`（`Md.*` 回退与覆盖）、`Rendering/RunCacheBenchTests.cs`（缓存开关下的排版耗时对比，断言只查内容正确）、`Rendering/HtmlRenderingTests.cs`、`Transcript/SmoothStreamWrapTests.cs`（硬换行回归）。
+- 运行：仓库口径是 `dotnet test StreamMark.slnx`（`README.md:91`；CI 用同样命令）。只跑一个文件里的测试可用 `dotnet test tests/StreamMark.Avalonia.Tests/StreamMark.Avalonia.Tests.csproj --filter "FullyQualifiedName~SmoothStreamWrapTests"`——仓库脚本与 CI 里没有这种调用（unverified，本次未运行）。
+
+## Related flows
+- [streaming-token-to-view](../flows/streaming-token-to-view.md)
+- [stream-completion-reparse](../flows/stream-completion-reparse.md)
+- [theme-resolution](../flows/theme-resolution.md)
+- [raw-html-render](../flows/raw-html-render.md)
+- [text-selection-copy](../flows/text-selection-copy.md)
