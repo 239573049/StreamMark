@@ -137,4 +137,35 @@ public sealed class TranscriptViewTests
             window.Close();
         });
     }
+
+    [Fact]
+    public async Task ContentEntry_ThatGrows_PushesFollowingRowsDown()
+    {
+        await HeadlessApp.Run(async () =>
+        {
+            var (window, view) = Create();
+            // 模拟"思考过程"折叠块：展开后高度变大
+            var details = new TextBlock { Text = string.Join("\n", Enumerable.Range(1, 8).Select(i => $"thought line {i}")), IsVisible = false, Foreground = Brushes.Gray };
+            var thinking = new StackPanel { Children = { new TextBlock { Text = "思考过程", Foreground = Brushes.White }, details } };
+            view.Entries.Add(new ContentEntry(thinking));
+            var answer = MarkdownEntry.FromText("Answer paragraph that must stay below the thinking block.");
+            view.Entries.Add(answer);
+            await Converge(view);
+
+            var answerView = view.Panel.Children.OfType<global::StreamMark.Avalonia.Rendering.BlockView>().Single();
+            var collapsedTop = answerView.Bounds.Top;
+            Assert.True(collapsedTop >= thinking.Bounds.Bottom - 0.5, $"overlap before expand: {collapsedTop} < {thinking.Bounds.Bottom}");
+
+            details.IsVisible = true;
+            await HeadlessApp.Settle();
+            Assert.True(thinking.Bounds.Height > 100, $"thinking height {thinking.Bounds.Height}");
+            Assert.True(answerView.Bounds.Top >= thinking.Bounds.Bottom - 0.5, $"overlap after expand: {answerView.Bounds.Top} < {thinking.Bounds.Bottom}");
+            HeadlessApp.Save(window, "transcript-content-grows");
+
+            details.IsVisible = false;
+            await HeadlessApp.Settle();
+            Assert.Equal(collapsedTop, answerView.Bounds.Top, 1.0);
+            window.Close();
+        });
+    }
 }

@@ -18,7 +18,7 @@
         <PackageReference Include="Svg.Custom" VersionOverride="5.2.3" />
         <PackageReference Include="ShimSkiaSharp" VersionOverride="5.2.3" />
         <PackageReference Include="Svg.SceneGraph" VersionOverride="5.2.3" />
-        <PackageReference Include="Svg.Animation" VersionOverride="5.2.3" />
+        <!-- Svg.Animation 5.2.x 依赖 SkiaSharp 4，必须保持 5.1.1 --><PackageReference Include="Svg.Animation" VersionOverride="5.1.1" />
     </ItemGroup>
     <ItemGroup>
         <InternalsVisibleTo Include="StreamMark.Avalonia.Tests" />

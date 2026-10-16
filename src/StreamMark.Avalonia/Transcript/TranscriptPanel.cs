@@ -490,13 +490,15 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
                 if (!row.Measured || !view.IsMeasureValid)
                 {
                     view.Measure(new Size(width, double.PositiveInfinity));
-                    var measured = view.DesiredSize.Height;
                     row.Measured = true;
-                    if (Math.Abs(measured - row.Height) > 0.5)
-                    {
-                        row.Height = measured;
-                        changed = true;
-                    }
+                }
+                // 子控件自身变化（例如宿主内容展开 / 折叠）时，布局管理器会先单独重新测量它，
+                // 再通知面板；此时测量已有效，但记录的行高已过期，所以总是与当前期望高度比较
+                var measured = view.DesiredSize.Height;
+                if (Math.Abs(measured - row.Height) > 0.5)
+                {
+                    row.Height = measured;
+                    changed = true;
                 }
             }
             foreach (var row in _realized.Where(r => !keep.Contains(r)).ToList())
