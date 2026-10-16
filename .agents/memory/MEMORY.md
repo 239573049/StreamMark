@@ -1,0 +1,22 @@
+# StreamMark 记忆
+
+本目录的索引：一个条目一行。依赖某个条目之前先打开它。
+格式与规则见 [README.md](README.md)。个人记忆在 `.next-cowork/memory/`（不提交）。
+
+## Project
+- [调研五路并列，被否决的方案要留理由](research-decisions-recorded.md) — 为什么每个依赖都是「实测过的选择」，以及改选时该看哪里
+- [平台只做桌面，移动端零投入](desktop-only-scope.md) — 别为 iOS / Android 加分支
+- [强调扩展只启用删除线](strikethrough-only-emphasis.md) — 上标/下标/插入/高亮的误触发证据
+- [remend 只在尾部补全，冻结片段与整篇只做转义修正](remend-tail-only.md) — 「完整文本不该被补全」的取舍
+- [revert 掉 TCode 特有形状，那不算「StreamMark 不支持的 GFM」](tcode-shaped-revert.md) — 排查渲染异常前先看它
+- [Svg.Skia 5.1.1 + 托管依赖 5.2.3，Svg.Animation 必须保持 5.1.1](svgia-version-pin.md) — 升级 Avalonia 之前别动
+- [TextRunCache 的失效范围：从段落起点，不是差异点](textruncache-invalidation.md) — alpha.8/9 每次都变硬换行的原因
+- [代码块分段的横向滚动各段独立是已知限制](chunk-horizontal-scroll-limit.md) — 别当成待修的 bug
+- [主题要用资源别名而不是画刷](atomui-resource-alias.md) — 否则 AtomUI 下文字透明
+- [原生库有两条分发路径](native-library-two-paths.md) — 交叉发布时复制错架构的来历
+- [RaTeX 的本地补丁应提交上游](ratex-fbox-upstream-patch.md) — 上游修复后要移除补丁并重新接线
+- [StreamPacer.GetRevealTime 还没有生产消费者](pacer-reveal-time-unwired.md) — 排查渐显不生效时的第一个怀疑对象
+- [差异视图正在加入（2026-10-16）](diff-view-in-flight.md) — 当前在飞的特性，以及它会收紧哪些不变量
+
+## Reference
+- [上游与依赖的出处、许可和调研材料](upstream-and-license-references.md) — 改依赖或许可文本之前先读它

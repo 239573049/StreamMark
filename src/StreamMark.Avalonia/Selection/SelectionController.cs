@@ -42,6 +42,13 @@ public sealed class SelectionController
 {
     private readonly ISelectionHost _host;
     private bool _dragging;
+    // 按下后尚未移动：此时不捕获指针，松开事件照常送达链接 / 图片 / 引用等可点击内容
+    private bool _pressPending;
+    private Point _pressPoint;
+    private IPointer? _pressPointer;
+
+    /// <summary>按下后移动超过这个距离才开始拖拽选择（并捕获指针）。</summary>
+    private const double DragThreshold = 3;
 
     public SelectionController(ISelectionHost host)
     {
@@ -59,6 +66,11 @@ public sealed class SelectionController
     {
         var point = e.GetCurrentPoint(_host.HostControl);
         if (!point.Properties.IsLeftButtonPressed)
+        {
+            return;
+        }
+        // 按在宿主内容（会话中的 ContentEntry 控件）上：交给它自己处理点击，不开始选择
+        if (IsHostContent(e.Source as Visual))
         {
             return;
         }
@@ -89,20 +101,50 @@ public sealed class SelectionController
                 }
                 break;
         }
-        _dragging = e.ClickCount == 1;
-        if (_dragging)
+        _dragging = false;
+        _pressPending = e.ClickCount == 1;
+        _pressPoint = point.Position;
+        _pressPointer = e.Pointer;
+    }
+
+    // 指针所在的控件是否属于宿主提供的内容（而不是 Markdown 块视图或宿主本身的空白处）
+    internal bool IsHostContent(Visual? source)
+    {
+        var host = _host.HostControl;
+        for (var visual = source; visual is not null && !ReferenceEquals(visual, host); visual = visual.GetVisualParent())
         {
-            e.Pointer.Capture(_host.HostControl);
+            if (visual is Rendering.BlockView or ISelectableSegment || visual is global::Avalonia.Controls.Primitives.OverlayLayer)
+            {
+                return false;
+            }
+            if (ReferenceEquals(visual.GetVisualParent(), host))
+            {
+                // 宿主的直接子控件不是块视图：宿主内容
+                return true;
+            }
         }
+        return false;
     }
 
     private void OnMoved(object? sender, PointerEventArgs e)
     {
+        var position = e.GetPosition(_host.HostControl);
+        if (_pressPending && ReferenceEquals(e.Pointer, _pressPointer))
+        {
+            var delta = position - _pressPoint;
+            if (Math.Abs(delta.X) + Math.Abs(delta.Y) < DragThreshold)
+            {
+                return;
+            }
+            // 真正开始拖拽：捕获指针，指针移出宿主也能继续选择
+            _pressPending = false;
+            _dragging = true;
+            e.Pointer.Capture(_host.HostControl);
+        }
         if (!_dragging)
         {
             return;
         }
-        var position = e.GetPosition(_host.HostControl);
         _host.OnSelectionDrag(position);
         if (FindPoint(position) is { } hit)
         {
@@ -112,6 +154,7 @@ public sealed class SelectionController
 
     private void OnReleased(object? sender, PointerReleasedEventArgs e)
     {
+        _pressPending = false;
         if (!_dragging)
         {
             return;

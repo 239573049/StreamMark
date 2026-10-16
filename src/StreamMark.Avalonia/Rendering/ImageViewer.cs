@@ -39,18 +39,59 @@ public sealed class ImageViewer : Control
         {
             return null;
         }
-        var viewer = new ImageViewer(image, caption)
-        {
-            Width = layer.Bounds.Width,
-            Height = layer.Bounds.Height,
-        };
-        layer.Children.Add(viewer);
+        var viewer = new ImageViewer(image, caption);
+        viewer.Attach(layer, TopLevel.GetTopLevel(anchor));
         viewer.Focus();
         return viewer;
     }
 
+    private OverlayLayer? _layer;
+    private TopLevel? _topLevel;
+
+    // 覆盖层（Canvas）不会拉伸子控件：始终按覆盖层大小设置自身尺寸并跟随变化。
+    // 覆盖层第一次使用前可能还是 0×0（例如 AtomUI 窗口），此时先用窗口客户区大小
+    private void Attach(OverlayLayer layer, TopLevel? topLevel)
+    {
+        _layer = layer;
+        _topLevel = topLevel;
+        layer.PropertyChanged += OnLayerPropertyChanged;
+        if (topLevel is not null)
+        {
+            topLevel.PropertyChanged += OnLayerPropertyChanged;
+        }
+        layer.Children.Add(this);
+        UpdateSize();
+    }
+
+    private void OnLayerPropertyChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
+    {
+        if (e.Property == BoundsProperty || e.Property == TopLevel.ClientSizeProperty)
+        {
+            UpdateSize();
+        }
+    }
+
+    private void UpdateSize()
+    {
+        var size = _layer?.Bounds.Size is { Width: > 0, Height: > 0 } bounds ? bounds : _topLevel?.ClientSize ?? default;
+        if (size.Width > 0 && size.Height > 0 && (Math.Abs(Width - size.Width) > 0.5 || Math.Abs(Height - size.Height) > 0.5 || double.IsNaN(Width)))
+        {
+            Width = size.Width;
+            Height = size.Height;
+            InvalidateVisual();
+        }
+    }
+
     public void Close()
     {
+        if (_layer is not null)
+        {
+            _layer.PropertyChanged -= OnLayerPropertyChanged;
+        }
+        if (_topLevel is not null)
+        {
+            _topLevel.PropertyChanged -= OnLayerPropertyChanged;
+        }
         if (Parent is OverlayLayer layer)
         {
             layer.Children.Remove(this);
