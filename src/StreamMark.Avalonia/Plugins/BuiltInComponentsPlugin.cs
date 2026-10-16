@@ -27,6 +27,9 @@ public sealed class BuiltInComponentsPlugin : IMarkdownPlugin
         builder.AddBlockComponent("think", _ => new CollapsibleBlockView(), registerTag: false);
         builder.AddInlineComponent("citation", CitationRenderer.Instance, registerTag: false);
         builder.AddInlineComponent("cite", CiteRenderer.Instance, ComponentKind.InlinePair, registerTag: false);
+        // diff：统一 / 并排视图（流式中也用，边写边显示）
+        builder.AddFenceView("diff", _ => new DiffBlockView(), whileStreaming: true);
+        builder.AddFenceView("patch", _ => new DiffBlockView(), whileStreaming: true);
     }
 }
 

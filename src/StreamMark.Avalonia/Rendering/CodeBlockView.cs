@@ -207,13 +207,12 @@ public sealed class CodeBlockView : BlockView
         _expand.Foreground = style.SecondaryForeground;
         _expand.HoverBackground = style.HoverBackground;
         _expand.Icon = _collapsed ? MarkdownIcons.Chevron : MarkdownIcons.ChevronUp;
-        _expand.Label = _collapsed ? options.ExpandText(_lineCount) : options.CollapseText;
+        _expand.Label = _collapsed ? options.ExpandText(_lineCount) : options.CollapseText();
         _download.IsVisible = options.ShowDownload && IsFirstChunk;
         var shared = CodeBlockState.For(context, topKey, code.Language);
         shared.Update(code.Code);
         var lineStart = _linesPerChunk == int.MaxValue ? 0 : _chunk * _linesPerChunk;
         _segmentKey = KeyFor(context, topKey, ref segment);
-        _code.Diff = code.Language is { } lang && (lang.Equals("diff", StringComparison.OrdinalIgnoreCase) || lang.Equals("patch", StringComparison.OrdinalIgnoreCase));
         _code.Set(context, _segmentKey, shared, lineStart, _collapsed ? options.CollapsedLines : _linesPerChunk);
         UpdateLineNumbers(context, code, shared, lineStart);
         InvalidateMeasure();
@@ -429,9 +428,6 @@ public sealed class CodeTextView : Control, ISelectableSegment
     private bool _hover;
     private readonly List<double> _lineTops = [];
 
-    /// <summary>按 diff 语法给增删行和区段头加背景色。</summary>
-    internal bool Diff { get; set; }
-
     /// <summary>窗口内各行相对自身的顶部位置（行号用，测量后有效）。</summary>
     internal IReadOnlyList<double> LineTops => _lineTops;
 
@@ -541,19 +537,6 @@ public sealed class CodeTextView : Control, ISelectableSegment
         InvalidateVisual();
     }
 
-    private static readonly IBrush DiffAdded = new ImmutableSolidColorBrush(Color.FromArgb(0x33, 0x2E, 0xA0, 0x43));
-    private static readonly IBrush DiffRemoved = new ImmutableSolidColorBrush(Color.FromArgb(0x33, 0xF8, 0x51, 0x49));
-    private static readonly IBrush DiffHunk = new ImmutableSolidColorBrush(Color.FromArgb(0x26, 0x38, 0x8B, 0xFD));
-
-    private static IBrush? DiffBrush(string line) => line switch
-    {
-        _ when line.StartsWith("+++", StringComparison.Ordinal) || line.StartsWith("---", StringComparison.Ordinal) => null,
-        _ when line.StartsWith("@@", StringComparison.Ordinal) => DiffHunk,
-        _ when line.StartsWith('+') => DiffAdded,
-        _ when line.StartsWith('-') => DiffRemoved,
-        _ => null,
-    };
-
     private static bool SameTokens(ImmutableArray<HighlightToken> a, ImmutableArray<HighlightToken> b) =>
         a.IsDefault ? b.IsDefault : !b.IsDefault && a.SequenceEqual(b);
 
@@ -645,19 +628,6 @@ public sealed class CodeTextView : Control, ISelectableSegment
         }
         var style = _context.Style;
         var selected = _context.Selection.GetSegmentRange(Key, _text.Length);
-        if (Diff)
-        {
-            double dy = 0;
-            foreach (var line in _lines)
-            {
-                var h = _wrap ? LayoutFor(line, _layoutWidth).Height : LineHeight;
-                if (DiffBrush(line.Text) is { } brush)
-                {
-                    context.FillRectangle(brush, new Rect(0, dy, Bounds.Width, h));
-                }
-                dy += h;
-            }
-        }
         using (context.PushTransform(Matrix.CreateTranslation(-_offsetX, 0)))
         {
             double y = 0;

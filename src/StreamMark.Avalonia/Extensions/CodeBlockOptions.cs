@@ -17,10 +17,21 @@ public sealed record CodeBlockOptions
     /// <summary>头部显示"下载"按钮。</summary>
     public bool ShowDownload { get; init; } = true;
 
-    /// <summary>折叠栏文字：参数为总行数。</summary>
+    /// <summary>折叠栏文字：参数为总行数。每次显示时调用，可随界面语言变化。</summary>
     public Func<int, string> ExpandText { get; init; } = lines => $"Show all {lines} lines";
 
-    public string CollapseText { get; init; } = "Show less";
+    /// <summary>展开后折叠栏的文字（每次显示时调用）。</summary>
+    public Func<string> CollapseText { get; init; } = () => "Show less";
+
+    /// <summary>diff 头部切换按钮的提示：参数为要切换到的显示方式（每次显示时调用）。</summary>
+    public Func<Rendering.DiffViewMode, string> DiffModeText { get; init; } =
+        mode => mode == Rendering.DiffViewMode.Split ? "Split view" : "Unified view";
+
+    /// <summary><c>```diff</c> / <c>```patch</c> 的默认显示方式（用户在头部切换后按块保存）。</summary>
+    public Rendering.DiffViewMode DiffMode { get; init; } = Rendering.DiffViewMode.Unified;
+
+    /// <summary>并排视图所需的最小宽度，更窄时以统一视图显示。</summary>
+    public double DiffSplitMinWidth { get; init; } = 600;
 
     /// <summary>
     /// 保存代码的处理函数。为 null 时用窗口的 <c>IStorageProvider.SaveFilePickerAsync</c> 选择文件并写入 UTF-8 文本。

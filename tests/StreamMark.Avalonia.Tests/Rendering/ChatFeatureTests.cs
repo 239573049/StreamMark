@@ -126,7 +126,8 @@ public sealed class ChatFeatureTests
             await HeadlessApp.Settle();
 
             var blocks = view.GetVisualDescendants().OfType<CodeBlockView>().ToList();
-            Assert.Equal(2, blocks.Count);
+            Assert.Single(blocks);
+            Assert.Single(view.GetVisualDescendants().OfType<DiffBlockView>());
             var code = blocks[0];
             Assert.True(code.IsCollapsed);
             var collapsedHeight = code.Bounds.Height;
@@ -145,7 +146,6 @@ public sealed class ChatFeatureTests
             Assert.NotNull(saved);
             Assert.Equal("App.cs", saved!.SuggestedFileName);
             Assert.Equal(longCode, saved.Code);
-            Assert.False(blocks[1].IsCollapsed);
             window.Close();
         });
     }
