@@ -68,6 +68,16 @@ public sealed class TextSegmentView : Control, ISelectableSegment
         remove => RemoveHandler(LinkClickedEvent, value);
     }
 
+    /// <summary>已加载的图片被点击（冒泡）。未处理时打开全屏查看。</summary>
+    public static readonly RoutedEvent<ImageClickedEventArgs> ImageClickedEvent =
+        RoutedEvent.Register<TextSegmentView, ImageClickedEventArgs>(nameof(ImageClicked), RoutingStrategies.Bubble);
+
+    public event EventHandler<ImageClickedEventArgs>? ImageClicked
+    {
+        add => AddHandler(ImageClickedEvent, value);
+        remove => RemoveHandler(ImageClickedEvent, value);
+    }
+
     /// <summary>可点击的行内组件被点击（冒泡），例如引用标签。</summary>
     public static readonly RoutedEvent<ComponentClickedEventArgs> ComponentClickedEvent =
         RoutedEvent.Register<TextSegmentView, ComponentClickedEventArgs>(nameof(ComponentClicked), RoutingStrategies.Bubble);
@@ -117,6 +127,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
         if (from <= 0)
         {
             _runCache.Invalidate();
+            _fullRebuild = true;
         }
         else
         {
@@ -194,6 +205,16 @@ public sealed class TextSegmentView : Control, ISelectableSegment
         {
             _context.Selection.Changed -= OnSelectionChanged;
         }
+        // 归还图片句柄；重新挂载时排版会重新取得（通常命中内存缓存）
+        if (_images.Count > 0)
+        {
+            foreach (var slot in _images.Values)
+            {
+                slot.Dispose();
+            }
+            _images.Clear();
+            InvalidateLayout();
+        }
     }
 
     private void OnSelectionChanged() => InvalidateVisual();
@@ -232,19 +253,148 @@ public sealed class TextSegmentView : Control, ISelectableSegment
         {
             return _layout;
         }
+        // 图片按可用宽度缩放：宽度变化时缓存的图片 run 失效
+        if (!_runCacheWidth.Equals(maxWidth) && HasWidthDependentObjects())
+        {
+#pragma warning disable CS0618
+            _runCache.Invalidate();
+#pragma warning restore CS0618
+            _fullRebuild = true;
+        }
         _layout?.Dispose();
+        _usedImages.Clear();
         var source = new InlineTextSource(this, _context, _content, _fontSize, _fontWeight, _foreground ?? _context.Style.Foreground, maxWidth);
         var paragraph = new GenericTextParagraphProperties(source.DefaultProperties, _alignment, _wrapping,
             lineHeight: _context.Style.LineHeight * (_fontSize / _context.Style.FontSize));
 #pragma warning disable CS0618
         _layout = new TextLayout(source, paragraph, maxWidth: maxWidth, textRunCache: UseRunCache ? _runCache : null);
+        // 固定行高会把整行裁到该高度：行内有更高的对象（图片、大公式）时改用自然行高重新排版
+        if (HasOverflowingObjects(_layout))
+        {
+            _layout.Dispose();
+            paragraph = new GenericTextParagraphProperties(source.DefaultProperties, _alignment, _wrapping);
+            _layout = new TextLayout(source, paragraph, maxWidth: maxWidth, textRunCache: UseRunCache ? _runCache : null);
+        }
 #pragma warning restore CS0618
         _layoutWidth = maxWidth;
+        // 只有所有 run 都重新生成时，"本次用到的图片"才完整；部分复用缓存时不释放
+        if (_fullRebuild || !UseRunCache)
+        {
+            ReleaseUnusedImages();
+        }
+        _fullRebuild = false;
+        _runCacheWidth = maxWidth;
         return _layout;
     }
 
-    /// <summary>图片等异步资源就绪后重新排版。</summary>
-    internal void OnResourceLoaded() => InvalidateLayout();
+    // 已整形 run 缓存是否整体失效（下一次排版会对每个 run 调用 GetTextRun）
+    private bool _fullRebuild = true;
+
+    // 缓存中的 run 按哪个可用宽度生成
+    private double _runCacheWidth = double.NaN;
+
+    private bool HasOverflowingObjects(TextLayout layout)
+    {
+        if (_content.Objects.Length == 0)
+        {
+            return false;
+        }
+        foreach (var line in layout.TextLines)
+        {
+            foreach (var run in line.TextRuns)
+            {
+                if (run is DrawableTextRun drawable && drawable.Size.Height > line.Height + 0.5)
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private bool HasWidthDependentObjects()
+    {
+        foreach (var obj in _content.Objects)
+        {
+            if (obj.Kind is InlineObjectKind.Image or InlineObjectKind.Component)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>图片等异步资源就绪后重新排版（缓存的 run 仍是旧状态，整体失效）。</summary>
+    internal void OnResourceLoaded()
+    {
+#pragma warning disable CS0618
+        _runCache.Invalidate();
+#pragma warning restore CS0618
+        _fullRebuild = true;
+        InvalidateLayout();
+    }
+
+    // 本片段中图片的加载状态与缓存句柄（按解析后的地址）
+    private readonly Dictionary<string, ImageSlot> _images = [];
+
+    /// <summary>已加载完成的图片数（测试与诊断用）。</summary>
+    internal int LoadedImageCount => _images.Values.Count(s => s.Image is not null);
+
+    /// <summary>加载失败或被策略拒绝的图片数（测试与诊断用）。</summary>
+    internal int FailedImageCount => _images.Values.Count(s => s.Status is Images.ImageLoadStatus.Failed or Images.ImageLoadStatus.Blocked);
+
+    internal IEnumerable<string> DescribeImages() => _images.Select(p => $"{p.Key} {p.Value.Status} {p.Value.Reason}");
+
+    private readonly HashSet<string> _usedImages = [];
+
+    internal ImageSlot SlotFor(RenderContext context, string url, Size? declared, double maxWidth)
+    {
+        var resolved = Extensions.MarkdownServices.ResolveImageUrl(url, context.ImageBaseUri);
+        if (!_images.TryGetValue(resolved, out var slot))
+        {
+            slot = new ImageSlot(OnResourceLoaded);
+            _images[resolved] = slot;
+        }
+        _usedImages.Add(resolved);
+        // 解码宽度：显示宽度 × 渲染缩放（Retina 为 2 倍），避免把大图原尺寸常驻内存
+        var scaling = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1;
+        var displayWidth = declared?.Width ?? (double.IsFinite(maxWidth) ? maxWidth : 1024);
+        slot.Ensure(context.Services.Images, resolved, (int)Math.Ceiling(Math.Max(1, displayWidth) * scaling));
+        return slot;
+    }
+
+    private void ReleaseUnusedImages()
+    {
+        foreach (var url in _images.Keys.Where(u => !_usedImages.Contains(u)).ToList())
+        {
+            _images[url].Dispose();
+            _images.Remove(url);
+        }
+    }
+
+    private ImageSlot? ImageAt(Point point, out InlineObject? image)
+    {
+        image = null;
+        if (_layout is null || _context is null)
+        {
+            return null;
+        }
+        var hit = _layout.HitTestPoint(point);
+        if (!hit.IsInside)
+        {
+            return null;
+        }
+        foreach (var obj in _content.Objects)
+        {
+            if (obj.Kind == InlineObjectKind.Image && (obj.Offset == hit.TextPosition || obj.Offset == hit.TextPosition - 1 && hit.IsTrailing))
+            {
+                image = obj;
+                var resolved = Extensions.MarkdownServices.ResolveImageUrl(obj.Value, _context.ImageBaseUri);
+                return _images.GetValueOrDefault(resolved);
+            }
+        }
+        return null;
+    }
 
     public override void Render(DrawingContext context)
     {
@@ -428,7 +578,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
         base.OnPointerMoved(e);
         var position = e.GetPosition(this);
         var link = LinkAt(position);
-        var clickable = link >= 0 || ComponentAt(position) is not null;
+        var clickable = link >= 0 || ComponentAt(position) is not null || ImageAt(position, out _) is { Status: not Images.ImageLoadStatus.Blocked };
         if (link != _hoverLink || clickable != _hoverClickable)
         {
             _hoverLink = link;
@@ -458,6 +608,28 @@ public sealed class TextSegmentView : Control, ISelectableSegment
             return;
         }
         var position = e.GetPosition(this);
+        if (ImageAt(position, out var imageObject) is { } slot)
+        {
+            switch (slot.Status)
+            {
+                case Images.ImageLoadStatus.Failed:
+                    slot.Retry();
+                    break;
+                case Images.ImageLoadStatus.NeedsConsent:
+                    slot.Approve();
+                    break;
+                case Images.ImageLoadStatus.Loaded when slot.Image is { } loaded:
+                    var args = new ImageClickedEventArgs(ImageClickedEvent, this, slot.Url, imageObject?.Alt, loaded);
+                    RaiseEvent(args);
+                    if (!args.Handled)
+                    {
+                        ImageViewer.Show(this, loaded, imageObject?.Alt);
+                    }
+                    break;
+            }
+            e.Handled = true;
+            return;
+        }
         if (ComponentAt(position) is { } component)
         {
             RaiseEvent(new ComponentClickedEventArgs(ComponentClickedEvent, this, component.Name, component.Attributes));
@@ -616,7 +788,8 @@ public sealed class TextSegmentView : Control, ISelectableSegment
             {
                 return typeface;
             }
-            foreach (var weight in new[] { (int)requested.Weight, 600, 800, 900 })
+            Typeface? medium = null;
+            foreach (var weight in new[] { (int)requested.Weight, 600, 800, 900, 500 })
             {
                 var candidate = new Typeface(family, requested.Style, (FontWeight)weight, requested.Stretch);
                 try
@@ -626,12 +799,17 @@ public sealed class TextSegmentView : Control, ISelectableSegment
                     {
                         return candidate;
                     }
+                    // 部分系统（如 CI 镜像里的苹方）最粗只有中等字重：没有更粗的就用它，总比常规字重好
+                    if ((int)glyphs.Weight >= 500)
+                    {
+                        medium ??= candidate;
+                    }
                 }
                 catch (Exception)
                 {
                 }
             }
-            return typeface;
+            return medium ?? typeface;
         }
 
         private TextRunProperties FallbackProperties(TextRunProperties properties, InlineStyle style, int component, Typeface fallback)
@@ -664,17 +842,14 @@ public sealed class TextSegmentView : Control, ISelectableSegment
                     }
                 case InlineObjectKind.Image:
                     {
+                        var declared = DeclaredSize(obj.Attributes);
                         if (Core.Remend.Remend.IncompleteImageUrl == obj.Value)
                         {
-                            return new ImageRun(null, obj.Alt ?? "", _maxWidth, properties, style.CodeBorderBrush, style.InlineCodeBackground);
+                            // 流式中地址还没写完：骨架占位
+                            return new ImageRun(null, obj.Alt ?? "", declared, _maxWidth, properties, style);
                         }
-                        if (ImageCache.TryGet(obj.Value, out var image))
-                        {
-                            return new ImageRun(image, obj.Alt ?? "", _maxWidth, properties, style.CodeBorderBrush, style.InlineCodeBackground);
-                        }
-                        var owner = _owner;
-                        ImageCache.Request(obj.Value, _context.Services.ImageLoader, owner.OnResourceLoaded);
-                        return new ImageRun(null, obj.Alt ?? "", _maxWidth, properties, style.CodeBorderBrush, style.InlineCodeBackground);
+                        var slot = _owner.SlotFor(_context, obj.Value, declared, _maxWidth);
+                        return new ImageRun(slot, obj.Alt ?? "", declared, _maxWidth, properties, style);
                     }
                 case InlineObjectKind.TaskCheckbox:
                     return new CheckboxRun(obj.Flag, _fontSize, style.SecondaryForeground, style.LinkForeground, properties);
@@ -688,6 +863,11 @@ public sealed class TextSegmentView : Control, ISelectableSegment
                     return new TextCharacters(InlineObject.Placeholder.ToString(), properties);
             }
         }
+
+        private static Size? DeclaredSize(ComponentAttributes attributes) =>
+            double.TryParse(attributes["width"]?.TrimEnd('p', 'x'), System.Globalization.CultureInfo.InvariantCulture, out var w) && w > 0
+                ? new Size(w, double.TryParse(attributes["height"]?.TrimEnd('p', 'x'), System.Globalization.CultureInfo.InvariantCulture, out var h) && h > 0 ? h : double.NaN)
+                : null;
 
         private TextRunProperties PropertiesFor(InlineStyle style, int component = -1)
         {
@@ -777,4 +957,13 @@ public sealed class ComponentClickedEventArgs(RoutedEvent routedEvent, object so
     public string Name { get; } = name;
 
     public ComponentAttributes Attributes { get; } = attributes;
+}
+
+public sealed class ImageClickedEventArgs(RoutedEvent routedEvent, object source, string url, string? alt, IImage image) : RoutedEventArgs(routedEvent, source)
+{
+    public string Url { get; } = url;
+
+    public string? Alt { get; } = alt;
+
+    public IImage Image { get; } = image;
 }

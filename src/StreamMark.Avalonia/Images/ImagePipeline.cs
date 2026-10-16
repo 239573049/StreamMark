@@ -29,6 +29,19 @@ public sealed record ImagePipelineOptions
 
     /// <summary>时钟（测试可注入）；null 表示系统时钟。</summary>
     public TimeProvider? TimeProvider { get; init; }
+
+    /// <summary>SVG 栅格化器（例如 StreamMark.Mermaid 的 <c>SvgImageRasterizer</c>）；null 表示不支持 SVG。</summary>
+    public ISvgRasterizer? SvgRasterizer { get; init; }
+}
+
+/// <summary>把 SVG 字节栅格化为位图（在线程池上调用，必须线程安全）。</summary>
+public interface ISvgRasterizer
+{
+    /// <summary>
+    /// 栅格化。<paramref name="targetWidth"/> 为期望的像素宽度（0 表示按 SVG 的自然尺寸）；
+    /// <paramref name="naturalSize"/> 返回 SVG 的自然尺寸（像素）。失败返回 null。
+    /// </summary>
+    global::Avalonia.Media.Imaging.Bitmap? Rasterize(byte[] svg, int targetWidth, out global::Avalonia.PixelSize naturalSize);
 }
 
 /// <summary>
@@ -44,6 +57,7 @@ public sealed class ImagePipeline : IDisposable
     private readonly ConcurrentDictionary<string, byte> _approved = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<IImageFetcher> _fetchers;
     private readonly HttpsFetcher _https;
+    private readonly ISvgRasterizer? _svg;
     private readonly CancellationTokenSource _lifetime = new();
     private volatile ImagePolicy _policy;
     private long _networkRequests;
@@ -66,6 +80,7 @@ public sealed class ImagePipeline : IDisposable
         }
         _https = options.HttpHandler is { } handler ? new HttpsFetcher(handler, disposeHandler: false) : new HttpsFetcher();
         _fetchers = [.. options.Fetchers, new DataUriFetcher(), _https, new FileFetcher()];
+        _svg = options.SvgRasterizer;
     }
 
     /// <summary>当前策略。可随时替换（例如设置页修改），对之后的请求生效。</summary>
@@ -325,13 +340,25 @@ public sealed class ImagePipeline : IDisposable
         }
         // 已在线程池上：解码不占用界面线程
         _lifetime.Token.ThrowIfCancellationRequested();
+        global::Avalonia.Media.Imaging.Bitmap? bitmap;
+        Interlocked.Increment(ref _decodes);
         if (bytes.Format == ImageFormat.Svg)
         {
-            Memory.AddFailure(url, "svg not supported");
-            return new CoreResult(ImageLoadStatus.Failed, null, "svg not supported");
+            if (_svg is null)
+            {
+                Memory.AddFailure(url, "svg not supported");
+                return new CoreResult(ImageLoadStatus.Failed, null, "svg not supported");
+            }
+            bitmap = _svg.Rasterize(bytes.Data!, bucket, out var svgSize);
+            if (bitmap is not null && svgSize.Width > 0)
+            {
+                bytes = bytes with { NaturalSize = svgSize };
+            }
         }
-        Interlocked.Increment(ref _decodes);
-        var bitmap = ImageDecoder.Decode(bytes.Data!, bucket, bytes.NaturalSize);
+        else
+        {
+            bitmap = ImageDecoder.Decode(bytes.Data!, bucket, bytes.NaturalSize);
+        }
         if (bitmap is null)
         {
             Memory.AddFailure(url, "decode failed");
@@ -343,7 +370,8 @@ public sealed class ImagePipeline : IDisposable
         }
         var decoded = bitmap.PixelSize;
         var natural = bytes.NaturalSize ?? decoded;
-        if (decoded.Width >= natural.Width)
+        // 矢量图按目标宽度栅格化，可以大于自然尺寸，自然尺寸仍取 SVG 声明的尺寸
+        if (decoded.Width >= natural.Width && bytes.Format != ImageFormat.Svg)
         {
             // 完整解码：以实际结果为准（例如 EXIF 旋转），存为原始尺寸档位
             natural = decoded;

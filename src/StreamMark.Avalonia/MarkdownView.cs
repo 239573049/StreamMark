@@ -42,6 +42,7 @@ public class MarkdownView : Control, ISelectionHost
         DocumentProperty.Changed.AddClassHandler<MarkdownView>((view, _) => view.OnSourceChanged());
         StreamProperty.Changed.AddClassHandler<MarkdownView>((view, _) => view.OnSourceChanged());
         MarkdownServices.ServicesProperty.Changed.AddClassHandler<MarkdownView>((view, _) => view.InvalidateContext());
+        MarkdownServices.ImageBaseUriProperty.Changed.AddClassHandler<MarkdownView>((view, _) => view.InvalidateContext());
     }
 
     public MarkdownView()
@@ -166,7 +167,7 @@ public class MarkdownView : Control, ISelectionHost
     }
 
     private RenderContext CreateContext() =>
-        new(MarkdownStyle.Resolve(this), MarkdownServices.GetServices(this), Selection, 0, Stream?.State, _state);
+        new(MarkdownStyle.Resolve(this), MarkdownServices.GetServices(this), Selection, 0, Stream?.State, _state, MarkdownServices.GetImageBaseUri(this));
 
     private void InvalidateContext()
     {

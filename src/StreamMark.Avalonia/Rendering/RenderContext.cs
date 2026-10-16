@@ -10,8 +10,9 @@ namespace StreamMark.Avalonia.Rendering;
 /// </summary>
 public sealed class RenderContext
 {
-    public RenderContext(MarkdownStyle style, MarkdownServices services, SelectionModel selection, int entry, StreamingState? streaming, BlockStateStore? state = null)
+    public RenderContext(MarkdownStyle style, MarkdownServices services, SelectionModel selection, int entry, StreamingState? streaming, BlockStateStore? state = null, string? imageBaseUri = null)
     {
+        ImageBaseUri = imageBaseUri;
         State = state ?? new BlockStateStore();
         Style = style;
         Services = services;
@@ -27,6 +28,9 @@ public sealed class RenderContext
     /// <summary>插件注册表（等同于 <c>Services.Registry</c>）。</summary>
     public PluginRegistry Plugins => Services.Registry;
 
+    /// <summary>相对图片地址的基准。</summary>
+    public string? ImageBaseUri { get; }
+
     /// <summary>文档的块级界面状态（跨视图回收与重建保留）。</summary>
     public BlockStateStore State { get; }
 
@@ -39,5 +43,5 @@ public sealed class RenderContext
     public StreamingState? Streaming { get; }
 
     public RenderContext With(MarkdownStyle? style = null, MarkdownServices? services = null, int? entry = null) =>
-        new(style ?? Style, services ?? Services, Selection, entry ?? Entry, Streaming, State);
+        new(style ?? Style, services ?? Services, Selection, entry ?? Entry, Streaming, State, ImageBaseUri);
 }

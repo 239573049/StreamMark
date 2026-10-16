@@ -61,51 +61,73 @@ internal sealed class TextObjectRun : DrawableTextRun
     }
 }
 
-/// <summary>行内图片：加载完成前显示占位框。</summary>
+/// <summary>
+/// 行内图片。已加载时按自然尺寸（或 width/height 属性）显示并缩放到可用宽度；
+/// 加载中且已知像素尺寸时按宽高比绘制骨架占位（加载完成时不跳动）；其余状态显示小标签：
+/// 加载中 / 失败（可重试）/ 需要确认（显示域名，可点击加载）/ 被策略禁止。
+/// </summary>
 internal sealed class ImageRun : DrawableTextRun
 {
     private readonly IImage? _image;
     private readonly Size _size;
-    private readonly TextObjectRun? _placeholder;
+    private readonly TextObjectRun? _label;
+    private readonly IBrush _skeleton;
     private readonly IBrush _border;
 
-    public ImageRun(IImage? image, string alt, double maxWidth, TextRunProperties properties, IBrush border, IBrush placeholderBackground)
+    public ImageRun(ImageSlot? slot, string alt, Size? declared, double maxWidth, TextRunProperties properties, MarkdownStyle style)
     {
         Properties = properties;
-        _image = image;
-        _border = border;
-        if (image is not null)
+        _skeleton = style.InlineCodeBackground;
+        _border = style.CodeBorderBrush;
+        _image = slot?.Image;
+        // 显示尺寸：像浏览器一样按自然像素尺寸（1 像素 = 1 DIP），width/height 属性优先；
+        // 只写了宽度时按自然宽高比推算高度。解码出的位图可能更小（按显示宽度解码）或更大（高分屏），只用于绘制
+        Size? natural = slot?.PixelSize is { Width: > 0, Height: > 0 } px ? new Size(px.Width, px.Height) : _image?.Size;
+        var source = declared is { } d
+            ? new Size(d.Width, double.IsNaN(d.Height) ? (natural is { } n ? d.Width * n.Height / n.Width : d.Width * 0.6) : d.Height)
+            : natural;
+        if (source is { } known && (_image is not null || slot is { IsLoading: true }))
         {
-            var natural = image.Size;
-            var scale = 1.0;
-            if (double.IsFinite(maxWidth) && natural.Width > maxWidth && maxWidth > 0)
-            {
-                scale = maxWidth / natural.Width;
-            }
-            _size = new Size(Math.Max(1, natural.Width * scale), Math.Max(1, natural.Height * scale));
+            var scale = double.IsFinite(maxWidth) && known.Width > maxWidth && maxWidth > 0 ? maxWidth / known.Width : 1;
+            _size = new Size(Math.Max(1, known.Width * scale), Math.Max(1, known.Height * scale));
+            return;
         }
-        else
+        var text = slot?.Status switch
         {
-            _placeholder = new TextObjectRun(string.IsNullOrWhiteSpace(alt) ? "🖼" : "🖼 " + alt, properties, placeholderBackground, 6);
-            _size = _placeholder.Size;
-        }
+            Images.ImageLoadStatus.Failed => "⚠ " + (string.IsNullOrWhiteSpace(alt) ? "image" : alt) + "  ↻",
+            Images.ImageLoadStatus.NeedsConsent => "🖼 " + slot.Host + " · Load image",
+            Images.ImageLoadStatus.Blocked => "🖼 " + (string.IsNullOrWhiteSpace(alt) ? "image" : alt),
+            _ => "🖼 " + (string.IsNullOrWhiteSpace(alt) ? "…" : alt),
+        };
+        _label = new TextObjectRun(text, properties, style.InlineCodeBackground, 6);
+        _size = _label.Size;
     }
 
     public override TextRunProperties Properties { get; }
 
     public override Size Size => _size;
 
-    public override double Baseline => _placeholder?.Baseline ?? _size.Height;
+    public override double Baseline => _label?.Baseline ?? _size.Height;
 
     public override void Draw(DrawingContext drawingContext, Point origin)
     {
+        var rect = new Rect(origin, _size);
         if (_image is not null)
         {
-            drawingContext.DrawImage(_image, new Rect(_image.Size), new Rect(origin, _size));
+            using (drawingContext.PushClip(new RoundedRect(rect, 4)))
+            {
+                drawingContext.DrawImage(_image, new Rect(_image.Size), rect);
+            }
             return;
         }
-        _placeholder!.Draw(drawingContext, origin);
-        drawingContext.DrawRectangle(null, new Pen(_border, 1), new Rect(origin, _size).Deflate(0.5), 3, 3);
+        if (_label is null)
+        {
+            // 骨架占位
+            drawingContext.DrawRectangle(_skeleton, null, rect, 6, 6);
+            return;
+        }
+        _label.Draw(drawingContext, origin);
+        drawingContext.DrawRectangle(null, new Pen(_border, 1), rect.Deflate(0.5), 3, 3);
     }
 }
 

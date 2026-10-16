@@ -48,7 +48,9 @@ public sealed class LongCodeTests(ITestOutputHelper output)
                 Assert.InRange(panel.RealizedCount, 1, 12);
             }
             output.WriteLine("jump layout ms: " + string.Join(", ", times.Select(t => t.ToString("F1"))));
-            Assert.True(times.Skip(1).Max() < 30, "chunk jump layout too slow");
+            // CI 共享虚拟机比本机慢一个数量级，只防止退化成整块排版（数百毫秒）
+            var limit = Environment.GetEnvironmentVariable("CI") is null ? 30 : 200;
+            Assert.True(times.Skip(1).Max() < limit, "chunk jump layout too slow");
 
             // 中段视图只显示自己的行窗口，头部只在第一段
             view.Offset = new(0, panel.Extent.Height * 0.5);

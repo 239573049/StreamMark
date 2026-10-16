@@ -223,10 +223,11 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
     {
         _style ??= MarkdownStyle.Resolve(this);
         _services = MarkdownServices.GetServices(this);
-        if (state.Context is null || !ReferenceEquals(state.Context.Style, _style) || !ReferenceEquals(state.Context.Services, _services))
+        if (state.Context is null || !ReferenceEquals(state.Context.Style, _style) || !ReferenceEquals(state.Context.Services, _services)
+            || state.Context.ImageBaseUri != MarkdownServices.GetImageBaseUri(this))
         {
             var streaming = (state.Entry as MarkdownEntry)?.State;
-            state.Context = new RenderContext(_style, _services, Selection, index, streaming, state.State);
+            state.Context = new RenderContext(_style, _services, Selection, index, streaming, state.State, MarkdownServices.GetImageBaseUri(this));
         }
         return state.Context;
     }
