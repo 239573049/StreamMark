@@ -98,6 +98,9 @@ public sealed class TextSegmentView : Control, ISelectableSegment
         remove => RemoveHandler(ComponentClickedEvent, value);
     }
 
+    protected override global::Avalonia.Automation.Peers.AutomationPeer OnCreateAutomationPeer() =>
+        new Automation.TextSegmentAutomationPeer(this, () => BlockText.PlainText(_content, 0, int.MaxValue, o => _context?.Plugins.FindInlineComponent(o.Value)?.ToPlainText(o)));
+
     /// <summary>设置内容与外观；内容或外观未变时不重新排版。</summary>
     public void Set(RenderContext context, SegmentKey key, InlineContent content, double fontSize, FontWeight weight = default,
         IBrush? foreground = null, TextAlignment alignment = TextAlignment.Left, TextWrapping wrapping = TextWrapping.Wrap)
@@ -447,6 +450,14 @@ public sealed class TextSegmentView : Control, ISelectableSegment
             return;
         }
 
+        foreach (var (start, end, current) in _context.Selection.GetHighlights(Key, _content.Text.Length))
+        {
+            var brush = current ? _context.Style.SearchCurrentBackground : _context.Style.SearchHighlightBackground;
+            foreach (var rect in layout.HitTestTextRange(start, end - start))
+            {
+                context.FillRectangle(brush, rect, 2);
+            }
+        }
         if (_context.Selection.GetSegmentRange(Key, _content.Text.Length) is { } selected)
         {
             foreach (var rect in layout.HitTestTextRange(selected.Start, selected.End - selected.Start))

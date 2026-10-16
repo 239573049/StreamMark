@@ -204,8 +204,25 @@ internal static class MarkdigMapper
             var openStart = ctx.Map.ToSource(span.Start);
             return new SourceRange(openStart, ctx.Map.SourceEnd - openStart);
         }
+        // Markdig 的脚注组区间从文档开头算起（起点为 0）：取其中脚注的区间，否则 key 会与第一个块重复
+        if (block is FootnoteGroup { Count: > 0 } group)
+        {
+            var firstNote = RangeOf(group[0], ctx);
+            var lastNote = RangeOf(group[^1], ctx);
+            return new SourceRange(firstNote.Start, Math.Max(firstNote.End, lastNote.End) - firstNote.Start);
+        }
         if (span.IsEmpty)
         {
+            // 没有区间的容器：取子块区间的并集
+            if (block is ContainerBlock { Count: > 0 } container)
+            {
+                var first = RangeOf(container[0], ctx);
+                var last = RangeOf(container[^1], ctx);
+                if (first.Length > 0 || last.Length > 0)
+                {
+                    return new SourceRange(first.Start, Math.Max(first.End, last.End) - first.Start);
+                }
+            }
             var at = ctx.Map.ToSource(Math.Max(span.Start, 0));
             return new SourceRange(at, 0);
         }

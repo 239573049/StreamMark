@@ -32,6 +32,9 @@ public interface ISelectionHost
 
     /// <summary>插件注册表（复制时行内组件的纯文本由插件提供）。</summary>
     Plugins.PluginRegistry? Plugins => null;
+
+    /// <summary>滚动到选区坐标所在位置（查找结果跳转）。</summary>
+    void ScrollToPoint(TextPoint point) { }
 }
 
 /// <summary>
@@ -60,7 +63,8 @@ public sealed class SelectionController
         control.AddHandler(InputElement.KeyDownEvent, OnKeyDown, handledEventsToo: false);
     }
 
-    private SelectionModel Selection => _host.Selection;
+    /// <summary>所控制的选区。</summary>
+    public SelectionModel Selection => _host.Selection;
 
     private void OnPressed(object? sender, PointerPressedEventArgs e)
     {
@@ -182,6 +186,162 @@ public sealed class SelectionController
         {
             Selection.Clear();
         }
+        else if (e.KeyModifiers.HasFlag(KeyModifiers.Shift) && ExtendByKey(e.Key, e.KeyModifiers))
+        {
+            e.Handled = true;
+        }
+    }
+
+    /// <summary>
+    /// 键盘扩展选区（需要已有选区或插入点）：Shift+←/→ 按字符（Alt / Ctrl 按词），可跨片段；Shift+↑/↓ 按显示行；
+    /// Shift+Home/End 到片段首尾。返回是否处理了该按键。
+    /// </summary>
+    public bool ExtendByKey(Key key, KeyModifiers modifiers = KeyModifiers.Shift)
+    {
+        if (Selection.Active is not { } active)
+        {
+            return false;
+        }
+        var byWord = modifiers.HasFlag(KeyModifiers.Alt) || modifiers.HasFlag(KeyModifiers.Control);
+        TextPoint? target = key switch
+        {
+            Key.Left => MoveHorizontal(active, -1, byWord),
+            Key.Right => MoveHorizontal(active, 1, byWord),
+            Key.Up => MoveVertical(active, -1),
+            Key.Down => MoveVertical(active, 1),
+            Key.Home => active with { Offset = 0 },
+            Key.End => SegmentLength(active) is { } length ? active with { Offset = length } : null,
+            _ => null,
+        };
+        if (target is not { } point)
+        {
+            return key is Key.Left or Key.Right or Key.Up or Key.Down or Key.Home or Key.End;
+        }
+        Selection.Extend(point);
+        return true;
+    }
+
+    // 片段文本（来自块模型，被虚拟化的片段也能取到）
+    private string? SegmentText(TextPoint point)
+    {
+        if (_host.GetSnapshot(point.Entry) is not { } snapshot)
+        {
+            return null;
+        }
+        foreach (var block in snapshot.Blocks)
+        {
+            if (block.Key == point.BlockKey)
+            {
+                var segments = BlockText.Segments(block);
+                return point.Segment >= 0 && point.Segment < segments.Count ? segments[point.Segment].Content?.Text ?? segments[point.Segment].Raw ?? "" : null;
+            }
+        }
+        return null;
+    }
+
+    private int? SegmentLength(TextPoint point) => SegmentText(point)?.Length;
+
+    private TextPoint? MoveHorizontal(TextPoint point, int direction, bool byWord)
+    {
+        if (SegmentText(point) is not { } text)
+        {
+            return null;
+        }
+        if (direction < 0 ? point.Offset > 0 : point.Offset < text.Length)
+        {
+            var offset = point.Offset + direction;
+            if (byWord)
+            {
+                // 跳过空白，再跳过一个词
+                offset = point.Offset;
+                if (direction < 0)
+                {
+                    while (offset > 0 && char.IsWhiteSpace(text[offset - 1])) offset--;
+                    while (offset > 0 && !char.IsWhiteSpace(text[offset - 1])) offset--;
+                }
+                else
+                {
+                    while (offset < text.Length && char.IsWhiteSpace(text[offset])) offset++;
+                    while (offset < text.Length && !char.IsWhiteSpace(text[offset])) offset++;
+                }
+            }
+            else if (direction < 0 && offset > 0 && char.IsLowSurrogate(text[offset]))
+            {
+                offset--;
+            }
+            else if (direction > 0 && offset < text.Length && char.IsLowSurrogate(text[offset]))
+            {
+                offset++;
+            }
+            return point with { Offset = offset };
+        }
+        // 片段边界：移到相邻片段的末尾 / 开头
+        return NeighbourSegment(point, direction) is { } neighbour
+            ? direction < 0 ? neighbour with { Offset = SegmentLength(neighbour) ?? 0 } : neighbour with { Offset = 0 }
+            : null;
+    }
+
+    // 阅读顺序中的相邻片段（跨块、跨消息）
+    private TextPoint? NeighbourSegment(TextPoint point, int direction)
+    {
+        TextPoint? previous = null;
+        var found = false;
+        for (var entry = 0; entry < _host.EntryCount; entry++)
+        {
+            if (_host.GetSnapshot(entry) is not { } snapshot)
+            {
+                continue;
+            }
+            foreach (var block in snapshot.Blocks)
+            {
+                var count = BlockText.Segments(block).Count;
+                for (var s = 0; s < count; s++)
+                {
+                    var current = new TextPoint(entry, block.Key, s, 0);
+                    if (found)
+                    {
+                        return current;
+                    }
+                    if (entry == point.Entry && block.Key == point.BlockKey && s == point.Segment)
+                    {
+                        if (direction < 0)
+                        {
+                            return previous;
+                        }
+                        found = true;
+                    }
+                    previous = current;
+                }
+            }
+        }
+        return null;
+    }
+
+    // 按显示行移动：取当前位置字符框的上方 / 下方一点，按坐标命中
+    private TextPoint? MoveVertical(TextPoint point, int direction)
+    {
+        var key = new SegmentKey(point.Entry, point.BlockKey, point.Segment);
+        var segment = _host.RealizedSegments().FirstOrDefault(s => s.Key == key);
+        if (segment is null)
+        {
+            return null;
+        }
+        var rect = segment.GetCharacterBounds(point.Offset);
+        // 逐步加大探测距离：块之间有间距，紧挨着的探测点可能仍命中当前行
+        foreach (var distance in new[] { 2, rect.Height * 0.5 + 2, rect.Height + 14, rect.Height * 2 + 28 })
+        {
+            var probe = new Point(rect.X + 1, direction < 0 ? rect.Top - distance : rect.Bottom + distance);
+            if (segment.View.TranslatePoint(probe, _host.HostControl) is not { } hostPoint || FindPoint(hostPoint) is not { } hit)
+            {
+                continue;
+            }
+            var sameLine = hit.Segment.Key == key && Math.Abs(hit.Segment.GetCharacterBounds(hit.Point.Offset).Top - rect.Top) < 1;
+            if (!sameLine)
+            {
+                return hit.Point;
+            }
+        }
+        return null;
     }
 
     public void SelectAll()

@@ -79,6 +79,124 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
 
     private sealed record PendingAnchor(Row Row, double Delta, double EntryDelta);
 
+    // ScrollToPoint 的目标（等目标行实例化后精确定位）
+    private TextPoint? _scrollTarget;
+
+    /// <summary>滚动到选区坐标所在位置（放在视口上部约 30% 处），必要时先解析按需条目。</summary>
+    public void ScrollToPoint(TextPoint point)
+    {
+        if (point.Entry < 0 || point.Entry >= _entries.Count)
+        {
+            return;
+        }
+        var state = _entries[point.Entry];
+        if (state.Entry is MarkdownEntry { IsParsed: false } deferred)
+        {
+            deferred.EnsureParsed();
+        }
+        ApplyAll();
+        EnsureRows();
+        EnsureTops();
+        if (RowFor(state, point) is not { } row)
+        {
+            return;
+        }
+        _pendingAnchor = null;
+        _pinned = false;
+        _scrollTarget = point;
+        var height = _viewport.Height > 0 ? _viewport.Height : 600;
+        _offset = new Vector(0, Math.Max(0, row.Top - height * 0.3));
+        InvalidateMeasure();
+        ScrollInvalidated?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>滚动到某个顶层块的开头。</summary>
+    public void ScrollToBlock(int entry, int blockKey) => ScrollToPoint(new TextPoint(entry, blockKey, 0, 0));
+
+    // 目标所在的行：长代码分段时按偏移所在的行选分段
+    private static Row? RowFor(EntryState state, TextPoint point)
+    {
+        Row? first = null;
+        foreach (var row in state.Rows)
+        {
+            if (row.Block?.Key != point.BlockKey)
+            {
+                continue;
+            }
+            first ??= row;
+            if (row.ChunkCount > 1 && row.Block is CodeBlock code)
+            {
+                var line = 0;
+                for (var i = 0; i < Math.Min(point.Offset, code.Code.Length); i++)
+                {
+                    if (code.Code[i] == '\n')
+                    {
+                        line++;
+                    }
+                }
+                if (line / LinesPerChunk == row.Chunk)
+                {
+                    return row;
+                }
+                continue;
+            }
+            return row;
+        }
+        return first;
+    }
+
+    // 目标位置在面板坐标中的 y（目标行必须已实例化）
+    private (Row Row, double Y)? TargetY(TextPoint point)
+    {
+        if (point.Entry < 0 || point.Entry >= _entries.Count || RowFor(_entries[point.Entry], point) is not { View: BlockView view } row)
+        {
+            return null;
+        }
+        var key = new SegmentKey(point.Entry, point.BlockKey, point.Segment);
+        var segment = view.Segments().FirstOrDefault(s => s.Key == key);
+        if (segment is null)
+        {
+            return (row, row.Top);
+        }
+        var rect = segment.GetCharacterBounds(point.Offset);
+        var local = segment.View.TranslatePoint(rect.TopLeft, view) ?? default;
+        return (row, row.Top + local.Y);
+    }
+
+    /// <summary>所有已解析条目的目录（按需条目尚未解析时不包含，避免一次解析整个历史）。</summary>
+    public List<OutlineItem> GetOutline()
+    {
+        var items = new List<OutlineItem>();
+        for (var i = 0; i < _entries.Count; i++)
+        {
+            if (_entries[i].Entry is MarkdownEntry { IsParsed: true } markdown)
+            {
+                items.AddRange(DocumentNavigation.Outline(markdown.Document.Latest, i));
+            }
+        }
+        return items;
+    }
+
+    // 文内锚点链接（#标题、#fn:脚注）：在同一条消息中找到目标就直接跳转，不再交给宿主
+    private void OnLinkClicked(object? sender, LinkClickedEventArgs e)
+    {
+        if (!e.Url.StartsWith('#') || e.Source is not Visual source)
+        {
+            return;
+        }
+        for (var i = 0; i < _entries.Count; i++)
+        {
+            var state = _entries[i];
+            if (state.Rows.Any(r => r.View is { } v && (ReferenceEquals(v, source) || v.IsVisualAncestorOf(source)))
+                && state.Applied is { } snapshot && DocumentNavigation.ResolveAnchor(snapshot, i, e.Url) is { } target)
+            {
+                ScrollToPoint(target);
+                e.Handled = true;
+                return;
+            }
+        }
+    }
+
     public TranscriptPanel()
     {
         ClipToBounds = true;
@@ -86,7 +204,9 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
         // 透明背景：空白处也能开始拖拽选择
         Background = Brushes.Transparent;
         _selection = new SelectionController(this);
+        MarkdownContextMenu.Attach(this, _selection);
         AddHandler(CodeBlockView.ExpandedChangedEvent, OnCodeExpandedChanged);
+        AddHandler(TextSegmentView.LinkClickedEvent, OnLinkClicked);
         ResourcesChanged += (_, _) => InvalidateStyle();
         ActualThemeVariantChanged += (_, _) => InvalidateStyle();
     }
@@ -725,52 +845,68 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
         var anchor = anchorIndex < _rows.Count ? _rows[anchorIndex] : null;
         var anchorDelta = anchor is null ? 0 : anchor.Top - _offset.Y;
 
-        for (var pass = 0; pass < 3; pass++)
+        void RunPasses(Row? anchor, double anchorDelta)
         {
-            if (_pinned)
+            for (var pass = 0; pass < 3; pass++)
             {
-                _offset = new Vector(0, Math.Max(0, _extent.Height - height));
-            }
-            var top = Math.Max(0, _offset.Y - Overscan);
-            var bottom = _offset.Y + height + Overscan;
-            var changed = false;
-            var keep = new HashSet<Row>();
-            for (var i = FirstRowAt(top); i < _rows.Count && _rows[i].Top <= bottom; i++)
-            {
-                var row = _rows[i];
-                if (row.Block is null && row.Owner.Entry is MarkdownEntry)
+                if (_pinned)
                 {
-                    continue;
+                    _offset = new Vector(0, Math.Max(0, _extent.Height - height));
                 }
-                var view = Realize(row);
-                keep.Add(row);
-                if (!row.Measured || !view.IsMeasureValid)
+                var top = Math.Max(0, _offset.Y - Overscan);
+                var bottom = _offset.Y + height + Overscan;
+                var changed = false;
+                var keep = new HashSet<Row>();
+                for (var i = FirstRowAt(top); i < _rows.Count && _rows[i].Top <= bottom; i++)
                 {
-                    view.Measure(new Size(width, double.PositiveInfinity));
-                    row.Measured = true;
+                    var row = _rows[i];
+                    if (row.Block is null && row.Owner.Entry is MarkdownEntry)
+                    {
+                        continue;
+                    }
+                    var view = Realize(row);
+                    keep.Add(row);
+                    if (!row.Measured || !view.IsMeasureValid)
+                    {
+                        view.Measure(new Size(width, double.PositiveInfinity));
+                        row.Measured = true;
+                    }
+                    // 子控件自身变化（例如宿主内容展开 / 折叠）时，布局管理器会先单独重新测量它，
+                    // 再通知面板；此时测量已有效，但记录的行高已过期，所以总是与当前期望高度比较
+                    var measured = view.DesiredSize.Height;
+                    if (Math.Abs(measured - row.Height) > 0.5)
+                    {
+                        row.Height = measured;
+                        changed = true;
+                    }
                 }
-                // 子控件自身变化（例如宿主内容展开 / 折叠）时，布局管理器会先单独重新测量它，
-                // 再通知面板；此时测量已有效，但记录的行高已过期，所以总是与当前期望高度比较
-                var measured = view.DesiredSize.Height;
-                if (Math.Abs(measured - row.Height) > 0.5)
+                foreach (var row in _realized.Where(r => !keep.Contains(r)).ToList())
                 {
-                    row.Height = measured;
-                    changed = true;
+                    Unrealize(row);
+                }
+                if (!changed)
+                {
+                    break;
+                }
+                _topsDirty = true;
+                EnsureTops();
+                if (!_pinned && anchor is not null)
+                {
+                    _offset = new Vector(0, Math.Max(0, anchor.Top - anchorDelta));
                 }
             }
-            foreach (var row in _realized.Where(r => !keep.Contains(r)).ToList())
+        }
+
+        RunPasses(anchor, anchorDelta);
+        // 跳转到指定位置：目标行实例化后，按片段中字符的实际位置把它放到视口上部，再重新实例化一次
+        if (_scrollTarget is { } target && TargetY(target) is { } targetY)
+        {
+            _scrollTarget = null;
+            var desired = Math.Max(0, targetY.Y - height * 0.3);
+            if (Math.Abs(desired - _offset.Y) > 1)
             {
-                Unrealize(row);
-            }
-            if (!changed)
-            {
-                break;
-            }
-            _topsDirty = true;
-            EnsureTops();
-            if (!_pinned && anchor is not null)
-            {
-                _offset = new Vector(0, Math.Max(0, anchor.Top - anchorDelta));
+                _offset = new Vector(0, desired);
+                RunPasses(targetY.Row, targetY.Row.Top - desired);
             }
         }
 
@@ -925,6 +1061,15 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
     }
 
     // ---- ISelectionHost ----
+
+    void ISelectionHost.ScrollToPoint(TextPoint point) => ScrollToPoint(point);
+
+    protected override global::Avalonia.Automation.Peers.AutomationPeer OnCreateAutomationPeer() => new Automation.MarkdownDocumentAutomationPeer(this);
+
+    /// <summary>会话内查找。</summary>
+    public SearchModel Search => _search ??= new SearchModel(this);
+
+    private SearchModel? _search;
 
     Control ISelectionHost.HostControl => this;
 

@@ -31,6 +31,15 @@ public class TranscriptView : ScrollViewer
 
     public SelectionController SelectionController => Panel.SelectionController;
 
+    /// <summary>会话内查找（高亮全部结果，<c>Next</c> / <c>Previous</c> 跳转）。</summary>
+    public SearchModel Search => Panel.Search;
+
+    /// <summary>所有已解析消息的目录。</summary>
+    public List<OutlineItem> GetOutline() => Panel.GetOutline();
+
+    /// <summary>滚动到选区坐标所在位置。</summary>
+    public void ScrollToPoint(TextPoint point) => Panel.ScrollToPoint(point);
+
     public bool IsPinnedToBottom => Panel.IsPinnedToBottom;
 
     /// <summary>滚动到底部并恢复贴底跟随。</summary>

@@ -68,6 +68,58 @@ public sealed class SelectionModel
         Changed?.Invoke();
     }
 
+    // 查找结果高亮：按片段索引
+    private Dictionary<SegmentKey, List<(int Start, int End, int Index)>> _highlights = [];
+    private int _currentHighlight = -1;
+
+    /// <summary>设置查找结果高亮（每个结果位于单个片段内）与当前结果序号。</summary>
+    public void SetHighlights(IReadOnlyList<(TextPoint Start, TextPoint End)> matches, int current)
+    {
+        var map = new Dictionary<SegmentKey, List<(int, int, int)>>();
+        for (var i = 0; i < matches.Count; i++)
+        {
+            var (start, end) = matches[i];
+            var key = new SegmentKey(start.Entry, start.BlockKey, start.Segment);
+            if (!map.TryGetValue(key, out var list))
+            {
+                map[key] = list = [];
+            }
+            list.Add((start.Offset, end.Offset, i));
+        }
+        _highlights = map;
+        _currentHighlight = current;
+        Changed?.Invoke();
+    }
+
+    public void ClearHighlights()
+    {
+        if (_highlights.Count == 0)
+        {
+            return;
+        }
+        _highlights = [];
+        _currentHighlight = -1;
+        Changed?.Invoke();
+    }
+
+    /// <summary>某个片段内的查找高亮区间；<c>Current</c> 表示当前结果。</summary>
+    public IEnumerable<(int Start, int End, bool Current)> GetHighlights(SegmentKey key, int length)
+    {
+        if (!_highlights.TryGetValue(key, out var list))
+        {
+            yield break;
+        }
+        foreach (var (start, end, index) in list)
+        {
+            var s = Math.Clamp(start, 0, length);
+            var e = Math.Clamp(end, 0, length);
+            if (e > s)
+            {
+                yield return (s, e, index == _currentHighlight);
+            }
+        }
+    }
+
     /// <summary>某个片段内被选中的字符区间（左闭右开），未选中返回 null。</summary>
     public (int Start, int End)? GetSegmentRange(SegmentKey key, int length)
     {

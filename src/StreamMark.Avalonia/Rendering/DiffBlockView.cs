@@ -57,6 +57,7 @@ public sealed class DiffBlockView : BlockView
         AddChild(_copy);
         _mode.Click += (_, _) => Mode = Mode == DiffViewMode.Split ? StackedMode : DiffViewMode.Split;
         _copy.Click += async (_, _) => await CopyAsync();
+        global::Avalonia.Automation.AutomationProperties.SetName(_copy, "Copy");
     }
 
     /// <summary>当前选择的显示方式（宽度不足时实际以统一视图显示，见 <see cref="EffectiveMode"/>）。</summary>
@@ -284,6 +285,8 @@ public sealed class DiffBodyView : Control, ISelectableSegment
     private bool _rowsDirty = true;
 
     public SegmentKey Key { get; private set; }
+
+    protected override global::Avalonia.Automation.Peers.AutomationPeer OnCreateAutomationPeer() => new Automation.TextSegmentAutomationPeer(this, () => _text);
 
     public string Text => _text;
 
@@ -809,6 +812,19 @@ public sealed class DiffBodyView : Control, ISelectableSegment
             foreach (var rect in layout.HitTestTextRange(changed.Start + cell.Shift, changed.Length))
             {
                 context.FillRectangle(brush, rect.Translate(origin), 2);
+            }
+        }
+        foreach (var (hs, he, current) in _context!.Selection.GetHighlights(Key, _text.Length))
+        {
+            var s0 = Math.Max(hs, cell.RawStart) - cell.RawStart;
+            var e0 = Math.Min(he, cell.RawStart + cell.Text.Length) - cell.RawStart;
+            if (e0 > s0)
+            {
+                var brush = current ? _context.Style.SearchCurrentBackground : _context.Style.SearchHighlightBackground;
+                foreach (var rect in layout.HitTestTextRange(s0, e0 - s0))
+                {
+                    context.FillRectangle(brush, rect.Translate(origin), 2);
+                }
             }
         }
         if (selected is { } range)

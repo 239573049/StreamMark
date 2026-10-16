@@ -24,6 +24,10 @@ public static class MarkdownResourceKeys
     public const string ListMarkerForeground = "Md.ListMarkerForeground";
     /// <summary><c>&lt;mark&gt;</c> 高亮背景。</summary>
     public const string MarkBackground = "Md.MarkBackground";
+    /// <summary>查找结果的高亮背景。</summary>
+    public const string SearchHighlightBackground = "Md.SearchHighlightBackground";
+    /// <summary>当前查找结果的高亮背景。</summary>
+    public const string SearchCurrentBackground = "Md.SearchCurrentBackground";
     public const string QuoteBorderBrush = "Md.QuoteBorderBrush";
     public const string TableBorderBrush = "Md.TableBorderBrush";
     public const string TableHeaderBackground = "Md.TableHeaderBackground";

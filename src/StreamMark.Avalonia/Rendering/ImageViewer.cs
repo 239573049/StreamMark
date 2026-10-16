@@ -13,7 +13,9 @@ namespace StreamMark.Avalonia.Rendering;
 /// </summary>
 public sealed class ImageViewer : Control
 {
-    private readonly IImage _image;
+    private readonly Size _contentSize;
+    private readonly Action<DrawingContext, Rect> _draw;
+    private readonly IBrush? _contentBackground;
     private readonly TextLayout? _caption;
     private double _scale = double.NaN;
     private Vector _offset;
@@ -21,9 +23,11 @@ public sealed class ImageViewer : Control
     private Vector _dragOrigin;
     private bool _moved;
 
-    private ImageViewer(IImage image, string? caption)
+    private ImageViewer(Size size, Action<DrawingContext, Rect> draw, IBrush? contentBackground, string? caption)
     {
-        _image = image;
+        _contentSize = size;
+        _draw = draw;
+        _contentBackground = contentBackground;
         Focusable = true;
         ClipToBounds = true;
         if (!string.IsNullOrWhiteSpace(caption))
@@ -33,13 +37,20 @@ public sealed class ImageViewer : Control
     }
 
     /// <summary>在 <paramref name="anchor"/> 所在窗口的覆盖层上打开查看器；没有覆盖层时返回 null。</summary>
-    public static ImageViewer? Show(Visual anchor, IImage image, string? caption = null)
+    public static ImageViewer? Show(Visual anchor, IImage image, string? caption = null) =>
+        Show(anchor, image.Size, (context, rect) => context.DrawImage(image, new Rect(image.Size), rect), null, caption);
+
+    /// <summary>
+    /// 全屏查看任意可绘制内容（例如图表）：<paramref name="size"/> 为自然尺寸，<paramref name="draw"/> 把内容画进给定矩形；
+    /// <paramref name="contentBackground"/> 为内容底色（深色遮罩上显示主题色内容时保证对比度）。
+    /// </summary>
+    public static ImageViewer? Show(Visual anchor, Size size, Action<DrawingContext, Rect> draw, IBrush? contentBackground = null, string? caption = null)
     {
-        if (OverlayLayer.GetOverlayLayer(anchor) is not { } layer)
+        if (OverlayLayer.GetOverlayLayer(anchor) is not { } layer || size.Width <= 0 || size.Height <= 0)
         {
             return null;
         }
-        var viewer = new ImageViewer(image, caption);
+        var viewer = new ImageViewer(size, draw, contentBackground, caption);
         viewer.Attach(layer, TopLevel.GetTopLevel(anchor));
         viewer.Focus();
         return viewer;
@@ -102,7 +113,7 @@ public sealed class ImageViewer : Control
     {
         get
         {
-            var size = _image.Size;
+            var size = _contentSize;
             if (size.Width <= 0 || size.Height <= 0)
             {
                 return 1;
@@ -119,7 +130,7 @@ public sealed class ImageViewer : Control
             {
                 _scale = FitScale;
             }
-            var size = _image.Size * _scale;
+            var size = _contentSize * _scale;
             var center = new Point(Bounds.Width / 2, Bounds.Height / 2) + _offset;
             return new Rect(center.X - size.Width / 2, center.Y - size.Height / 2, size.Width, size.Height);
         }
@@ -128,7 +139,12 @@ public sealed class ImageViewer : Control
     public override void Render(DrawingContext context)
     {
         context.FillRectangle(new SolidColorBrush(Color.FromArgb(0xD9, 0, 0, 0)), new Rect(Bounds.Size));
-        context.DrawImage(_image, new Rect(_image.Size), ImageRect);
+        var rect = ImageRect;
+        if (_contentBackground is not null)
+        {
+            context.DrawRectangle(_contentBackground, null, rect.Inflate(16), 8, 8);
+        }
+        _draw(context, rect);
         if (_caption is not null)
         {
             _caption.Draw(context, new Point((Bounds.Width - _caption.WidthIncludingTrailingWhitespace) / 2, Bounds.Height - _caption.Height - 24));

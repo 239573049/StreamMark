@@ -23,6 +23,7 @@ public sealed class TableBlockView : BlockView
 
     private readonly List<List<TextSegmentView>> _cells = [];
     private readonly IconButton _copy = new() { Icon = MarkdownIcons.Copy, IsVisible = false };
+    private readonly IconButton _fullscreen = new() { Icon = MarkdownIcons.Expand, IsVisible = false };
     private double[] _columnWidths = [];
     private double[] _rowHeights = [];
     private double _offsetX;
@@ -34,6 +35,8 @@ public sealed class TableBlockView : BlockView
     {
         ClipToBounds = true;
         AddChild(_copy);
+        AddChild(_fullscreen);
+        _fullscreen.Click += (_, _) => OpenFullscreen();
         _copy.Click += async (_, _) =>
         {
             if (TopLevel.GetTopLevel(this)?.Clipboard is { } clipboard && Block is TableBlock table)
@@ -48,6 +51,8 @@ public sealed class TableBlockView : BlockView
         var table = (TableBlock)block;
         _copy.Foreground = context.Style.SecondaryForeground;
         _copy.HoverBackground = context.Style.HoverBackground;
+        _fullscreen.Foreground = context.Style.SecondaryForeground;
+        _fullscreen.HoverBackground = context.Style.HoverBackground;
         for (var r = 0; r < table.Rows.Length; r++)
         {
             if (r >= _cells.Count)
@@ -130,6 +135,7 @@ public sealed class TableBlockView : BlockView
             _rowHeights[r] = height + CellPaddingY * 2;
         }
         _copy.Measure(Size.Infinity);
+        _fullscreen.Measure(Size.Infinity);
         _offsetX = Math.Clamp(_offsetX, 0, Math.Max(0, _contentWidth - available));
         return new Size(Math.Min(_contentWidth, available) + 1, _rowHeights.Sum() + 1);
     }
@@ -156,6 +162,7 @@ public sealed class TableBlockView : BlockView
         }
         var visibleRight = Math.Min(finalSize.Width, _shift + _contentWidth + 1);
         _copy.Arrange(new Rect(visibleRight - _copy.DesiredSize.Width - 3, 3, _copy.DesiredSize.Width, _copy.DesiredSize.Height));
+        _fullscreen.Arrange(new Rect(visibleRight - _copy.DesiredSize.Width - _fullscreen.DesiredSize.Width - 5, 3, _fullscreen.DesiredSize.Width, _fullscreen.DesiredSize.Height));
         return finalSize;
     }
 
@@ -196,12 +203,15 @@ public sealed class TableBlockView : BlockView
     {
         base.OnPointerEntered(e);
         _copy.IsVisible = true;
+        // 表格放不下（需要横向滚动）或较大时才提供全屏
+        _fullscreen.IsVisible = !IsInOverlay && (_contentWidth > Bounds.Width + 1 || _rowHeights.Length > 8);
     }
 
     protected override void OnPointerExited(PointerEventArgs e)
     {
         base.OnPointerExited(e);
         _copy.IsVisible = false;
+        _fullscreen.IsVisible = false;
     }
 
     protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
@@ -221,6 +231,13 @@ public sealed class TableBlockView : BlockView
     public override TextSegmentView? LastSegment() => _cells.Count > 0 && _cells[^1].Count > 0 ? _cells[^1][^1] : null;
 
     public override IEnumerable<ISelectableSegment> Segments() => _cells.SelectMany(r => r);
+
+    // 全屏覆盖层中的副本不再提供全屏按钮
+    internal bool IsInOverlay { get; init; }
+
+    /// <summary>在覆盖层中全屏查看表格（按自然列宽排版，可滚动）。</summary>
+    public BlockOverlay? OpenFullscreen() =>
+        Context is not null && Block is TableBlock table ? BlockOverlay.Show(this, Context, table, () => new TableBlockView { IsInOverlay = true }) : null;
 
     /// <summary>以 GitHub 表格语法输出。</summary>
     public static string ToMarkdown(TableBlock table)

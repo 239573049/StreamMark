@@ -61,6 +61,8 @@ public class MarkdownView : Control, ISelectionHost
                 InvalidateMeasure();
             });
         _selectionController = new SelectionController(this);
+        MarkdownContextMenu.Attach(this, _selectionController);
+        AddHandler(TextSegmentView.LinkClickedEvent, OnAnchorLinkClicked);
         ResourcesChanged += (_, _) => InvalidateContext();
         ActualThemeVariantChanged += (_, _) => InvalidateContext();
     }
@@ -194,6 +196,56 @@ public class MarkdownView : Control, ISelectionHost
     }
 
     private double Spacing => _context?.Style.BlockSpacing ?? 12;
+
+    void ISelectionHost.ScrollToPoint(TextPoint point) => ScrollToPoint(point);
+
+    protected override global::Avalonia.Automation.Peers.AutomationPeer OnCreateAutomationPeer() => new Automation.MarkdownDocumentAutomationPeer(this);
+
+    /// <summary>文档内查找。</summary>
+    public SearchModel Search => _search ??= new SearchModel(this);
+
+    private SearchModel? _search;
+
+    /// <summary>文档的目录（标题，按阅读顺序）。</summary>
+    public List<OutlineItem> GetOutline() => _presenter.Applied is { } snapshot ? DocumentNavigation.Outline(snapshot, 0) : [];
+
+    /// <summary>让选区坐标所在位置进入可视区域（由外层滚动容器滚动，例如 <see cref="ScrollViewer"/>）。找不到目标时返回 false。</summary>
+    public bool ScrollToPoint(TextPoint point)
+    {
+        var key = new SegmentKey(point.Entry, point.BlockKey, point.Segment);
+        foreach (var view in _presenter.Views)
+        {
+            if (view.TopKey != point.BlockKey)
+            {
+                continue;
+            }
+            var segment = view.Segments().FirstOrDefault(s => s.Key == key);
+            if (segment is null)
+            {
+                view.BringIntoView(new Rect(view.Bounds.Size).WithHeight(Math.Min(view.Bounds.Height, 40)));
+                return true;
+            }
+            var rect = segment.GetCharacterBounds(point.Offset);
+            // 目标上方多留一些空间，避免紧贴顶部
+            var target = new Rect(rect.X, rect.Y - 80, Math.Max(1, rect.Width), rect.Height + 160);
+            segment.View.BringIntoView(target);
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>滚动到某个顶层块的开头。</summary>
+    public bool ScrollToBlock(int blockKey) => ScrollToPoint(new TextPoint(0, blockKey, 0, 0));
+
+    // 文内锚点（#标题、#fn:脚注）在文档内跳转，找不到时交给宿主
+    private void OnAnchorLinkClicked(object? sender, LinkClickedEventArgs e)
+    {
+        if (e.Url.StartsWith('#') && _presenter.Applied is { } snapshot && DocumentNavigation.ResolveAnchor(snapshot, 0, e.Url) is { } target)
+        {
+            ScrollToPoint(target);
+            e.Handled = true;
+        }
+    }
 
     protected override Size MeasureOverride(Size availableSize)
     {

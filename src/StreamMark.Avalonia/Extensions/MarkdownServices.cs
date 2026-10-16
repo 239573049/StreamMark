@@ -39,6 +39,12 @@ public sealed class MarkdownServices
     /// <summary>引用来源（<c>&lt;Citation id&gt;</c> 悬停卡片与点击），没有时只显示标签。</summary>
     public ISourceProvider? Sources { get; init; }
 
+    /// <summary>显示右键菜单（复制、复制为 Markdown、全选、查找）。</summary>
+    public bool ContextMenu { get; init; } = true;
+
+    /// <summary>右键菜单文字（每次打开菜单时调用，可随界面语言变化）。</summary>
+    public Func<Selection.MarkdownMenuCommand, string> MenuText { get; init; } = Selection.MarkdownContextMenu.DefaultText;
+
     /// <summary>代码块选项：行号、折叠、下载。</summary>
     public CodeBlockOptions CodeBlocks { get; init; } = CodeBlockOptions.Default;
 

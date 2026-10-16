@@ -56,6 +56,9 @@ public sealed class CodeBlockView : BlockView
         AddChild(_wrap);
         AddChild(_copy);
         AddChild(_expand);
+        global::Avalonia.Automation.AutomationProperties.SetName(_copy, "Copy");
+        global::Avalonia.Automation.AutomationProperties.SetName(_wrap, "Wrap lines");
+        global::Avalonia.Automation.AutomationProperties.SetName(_download, "Download");
         _copy.Click += async (_, _) => await CopyAsync();
         _download.Click += async (_, _) => await DownloadAsync();
         _expand.Click += (_, _) => ToggleExpanded();
@@ -465,6 +468,8 @@ public sealed class CodeTextView : Control, ISelectableSegment
         ClipToBounds = true;
     }
 
+    protected override global::Avalonia.Automation.Peers.AutomationPeer OnCreateAutomationPeer() => new Automation.TextSegmentAutomationPeer(this, () => _text);
+
     internal void Set(RenderContext context, SegmentKey key, CodeBlockState state, int lineStart, int lineCount)
     {
         var contextChanged = !ReferenceEquals(_context, context);
@@ -636,6 +641,20 @@ public sealed class CodeTextView : Control, ISelectableSegment
                 var line = _lines[i];
                 var layout = LayoutFor(line, _layoutWidth);
                 var height = _wrap ? layout.Height : LineHeight;
+                foreach (var (hs, he, current) in _context.Selection.GetHighlights(Key, _text.Length))
+                {
+                    var lineStart = _lineStarts[i];
+                    var s = Math.Max(hs, lineStart) - lineStart;
+                    var e = Math.Min(he, lineStart + line.Text.Length) - lineStart;
+                    if (e > s)
+                    {
+                        var brush = current ? style.SearchCurrentBackground : style.SearchHighlightBackground;
+                        foreach (var rect in layout.HitTestTextRange(s, e - s))
+                        {
+                            context.FillRectangle(brush, rect.Translate(new Vector(0, y)), 2);
+                        }
+                    }
+                }
                 if (selected is { } range)
                 {
                     var lineStart = _lineStarts[i];

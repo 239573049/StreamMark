@@ -85,6 +85,29 @@ Raw HTML in Markdown (README style) is converted into the block model, so it sup
   - **Unified**: line numbers in two columns, chosen with `CodeBlocks.DiffMode = DiffViewMode.Unified`.
   - Diffs render while streaming. Copying gives the original diff text. The tooltip label comes from `CodeBlocks.DiffModeText`.
 
+## Navigation, search and interaction
+
+- **Outline and jumps**:
+  - `TranscriptView.GetOutline()` and `MarkdownView.GetOutline()` return the headings as `OutlineItem(Target, Level, Text, Id)`. Pass `Target` to `ScrollToPoint`.
+  - `TranscriptView.ScrollToPoint(TextPoint)` parses deferred entries if needed and places the target at about 30% from the top. `MarkdownView.ScrollToPoint` relies on the outer `ScrollViewer`.
+  - In-document links (`#heading-id`, footnote references `#fn:…`) jump inside the document and are not passed to the host.
+- **Search**: `view.Search` is a `SearchModel`.
+  - `Find(query, matchCase)` highlights every match, including content scrolled off-screen.
+  - `Next()`, `Previous()` and `MoveTo(i)` jump to a match. `Clear()` removes the highlights.
+  - Colours come from `Md.SearchHighlightBackground` and `Md.SearchCurrentBackground`.
+- **Keyboard selection**: with a selection or caret, Shift+←/→ moves by character (Alt or Ctrl moves by word) across segments, Shift+↑/↓ moves by line, and Shift+Home/End goes to the segment start or end.
+- **Context menu**: Copy, Copy as Markdown, Select All, and Find.
+  - It uses `MenuFlyout`, so it relies on the host theme's templates.
+  - The labels come from `MarkdownServices.MenuText`. Choosing "Find" raises `MarkdownContextMenu.FindRequestedEvent` so the host can show its find box.
+  - Disable it with `ContextMenu = false`.
+- **Fullscreen**:
+  - Large or overflowing tables get a fullscreen button that opens a `BlockOverlay` at natural column widths.
+  - Rendered diagrams open in the zoomable viewer.
+- **Accessibility**:
+  - Text segments, code and diffs expose Text automation peers whose name is the plain text. Headings carry their heading level.
+  - Icon buttons are Buttons with Invoke support. Block views are Group, Table or List. Markdown and transcript views are Documents.
+  - Avalonia has no public text pattern, so screen readers only get the name.
+
 ## Core usage
 
 ```csharp

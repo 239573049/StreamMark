@@ -21,6 +21,7 @@ public sealed class DiagramBlockView : BlockView
 
     private readonly IconButton _toggle = new() { Icon = MarkdownIcons.Code };
     private readonly IconButton _copy = new() { Icon = MarkdownIcons.Copy };
+    private readonly IconButton _fullscreen = new() { Icon = MarkdownIcons.Expand };
     private readonly CodeTextView _code = new();
     private DiagramResult? _diagram;
     private string? _error;
@@ -37,6 +38,8 @@ public sealed class DiagramBlockView : BlockView
         AddChild(_code);
         AddChild(_toggle);
         AddChild(_copy);
+        AddChild(_fullscreen);
+        _fullscreen.Click += (_, _) => OpenFullscreen();
         _toggle.Click += (_, _) =>
         {
             _showCode = !_showCode;
@@ -62,7 +65,7 @@ public sealed class DiagramBlockView : BlockView
         _code.Set(context, KeyFor(context, topKey, ref segment), shared, 0, int.MaxValue);
         _showCode = context.State.Get(topKey, "diagram.code", false);
         _toggle.Icon = _showCode ? MarkdownIcons.Diagram : MarkdownIcons.Code;
-        foreach (var button in new[] { _toggle, _copy })
+        foreach (var button in new[] { _toggle, _copy, _fullscreen })
         {
             button.Foreground = style.SecondaryForeground;
             button.HoverBackground = style.HoverBackground;
@@ -149,6 +152,16 @@ public sealed class DiagramBlockView : BlockView
 
     private bool DiagramVisible => _diagram is not null && !_showCode;
 
+    /// <summary>全屏查看图表（可缩放、平移）。</summary>
+    public ImageViewer? OpenFullscreen()
+    {
+        if (_diagram is not { } diagram || Context is null)
+        {
+            return null;
+        }
+        return ImageViewer.Show(this, diagram.Size, (context, rect) => diagram.Draw(context, rect), Context.Style.CodeBackground);
+    }
+
     /// <summary>当前显示的是渲染好的图表（而不是源码）。</summary>
     public bool IsShowingDiagram => DiagramVisible;
 
@@ -156,6 +169,7 @@ public sealed class DiagramBlockView : BlockView
     {
         _code.IsVisible = !DiagramVisible;
         _toggle.IsVisible = _diagram is not null;
+        _fullscreen.IsVisible = DiagramVisible;
         InvalidateMeasure();
         InvalidateVisual();
     }
@@ -166,6 +180,7 @@ public sealed class DiagramBlockView : BlockView
     {
         _toggle.Measure(Size.Infinity);
         _copy.Measure(Size.Infinity);
+        _fullscreen.Measure(Size.Infinity);
         var inner = Math.Max(0, availableSize.Width - Padding * 2);
         var width = double.IsFinite(availableSize.Width) ? availableSize.Width : 600;
         if (DiagramVisible)
@@ -198,7 +213,7 @@ public sealed class DiagramBlockView : BlockView
     protected override Size ArrangeOverride(Size finalSize)
     {
         var x = finalSize.Width - 6;
-        foreach (var button in new[] { _copy, _toggle })
+        foreach (var button in new[] { _copy, _toggle, _fullscreen })
         {
             if (!button.IsVisible)
             {

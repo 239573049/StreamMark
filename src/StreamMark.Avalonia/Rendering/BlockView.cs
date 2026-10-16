@@ -34,6 +34,8 @@ public abstract class BlockView : Control
 
     protected abstract void OnUpdate(RenderContext context, MarkdownBlock? previous, MarkdownBlock block, int topKey, ref int segment, bool contextChanged);
 
+    protected override global::Avalonia.Automation.Peers.AutomationPeer OnCreateAutomationPeer() => new Automation.BlockAutomationPeer(this);
+
     /// <summary>深度优先的最后一个文本片段（用于流式渐显和光标）。</summary>
     public virtual TextSegmentView? LastSegment() => null;
 
@@ -174,10 +176,13 @@ public sealed class TextBlockView : BlockView
             case HeadingBlock heading:
                 _text.Set(context, key, heading.Content, style.HeadingFontSize(heading.Level), heading.Level <= 4 ? FontWeight.SemiBold : FontWeight.Bold);
                 _level = heading.Level;
+                // 读屏按标题级别导航
+                global::Avalonia.Automation.AutomationProperties.SetHeadingLevel(_text, heading.Level);
                 break;
             case ParagraphBlock paragraph:
                 _text.Set(context, key, paragraph.Content, style.FontSize);
                 _level = 0;
+                global::Avalonia.Automation.AutomationProperties.SetHeadingLevel(_text, 0);
                 break;
             case HtmlBlock html:
                 _text.Set(context, key, new InlineContent(html.Html, [new InlineSpan(0, html.Html.Length, InlineStyle.Code)], [], []), style.FontSize, foreground: style.SecondaryForeground);

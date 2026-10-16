@@ -25,6 +25,11 @@ public sealed class IconButton : Control
 
     public event EventHandler? Click;
 
+    /// <summary>以代码触发点击（无障碍 Invoke、键盘激活）。</summary>
+    public void PerformClick() => Click?.Invoke(this, EventArgs.Empty);
+
+    protected override global::Avalonia.Automation.Peers.AutomationPeer OnCreateAutomationPeer() => new Automation.IconButtonAutomationPeer(this);
+
     public IBrush? Foreground { get; set; }
 
     public IBrush? HoverBackground { get; set; }
@@ -131,6 +136,8 @@ public static class MarkdownIcons
     public static Geometry Diagram { get; } = Geometry.Parse("M1.5,2.5 L6,2.5 L6,6 L1.5,6 Z M10,10 L14.5,10 L14.5,13.5 L10,13.5 Z M3.75,6 L3.75,11.75 L10,11.75");
 
     public static Geometry Chevron { get; } = Geometry.Parse("M4,6 L8,10 L12,6");
+
+    public static Geometry Expand { get; } = Geometry.Parse("M2.5,6 L2.5,2.5 L6,2.5 M10,2.5 L13.5,2.5 L13.5,6 M13.5,10 L13.5,13.5 L10,13.5 M6,13.5 L2.5,13.5 L2.5,10");
 
     public static Geometry ChevronUp { get; } = Geometry.Parse("M4,10 L8,6 L12,10");
 
