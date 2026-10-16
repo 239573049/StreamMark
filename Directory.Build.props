@@ -1,0 +1,24 @@
+<Project>
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <LangVersion>latest</LangVersion>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Company>StreamMark</Company>
+        <Product>StreamMark</Product>
+        <Authors>StreamMark contributors</Authors>
+        <Version>0.1.0</Version>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <Description>High-performance streaming Markdown rendering for Avalonia.</Description>
+        <!-- 裁剪 / AOT 相关警告一律视为错误：整个库必须 NativeAOT 安全 -->
+        <WarningsAsErrors>$(WarningsAsErrors);IL2026;IL2046;IL2050;IL2055;IL2057;IL2058;IL2059;IL2060;IL2067;IL2070;IL2072;IL2075;IL2077;IL2080;IL2087;IL2090;IL2091;IL2104;IL3000;IL3050;IL3051;IL3053</WarningsAsErrors>
+    </PropertyGroup>
+
+    <!-- src/ 下的库：可打包、启用 AOT 兼容性分析与 XML 文档 -->
+    <PropertyGroup Condition="$(MSBuildProjectDirectory.Contains('$([System.IO.Path]::DirectorySeparatorChar)src$([System.IO.Path]::DirectorySeparatorChar)'))">
+        <IsPackable>true</IsPackable>
+        <IsAotCompatible>true</IsAotCompatible>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <NoWarn>$(NoWarn);CS1591</NoWarn>
+    </PropertyGroup>
+</Project>

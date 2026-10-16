@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <Description>Mermaid diagram rendering for StreamMark (Mermaider + Svg.Skia), no browser required.</Description>
+    </PropertyGroup>
+    <ItemGroup>
+        <PackageReference Include="Avalonia" />
+        <!-- ISkiaSharpApiLeaseFeature：把 SKPicture 以矢量方式直接画进 Avalonia 的 Skia 画布 -->
+        <PackageReference Include="Avalonia.Skia" />
+        <PackageReference Include="Mermaider" />
+        <!--
+            Svg.Skia 5.2.x 依赖 SkiaSharp 4.148 / HarfBuzzSharp 14.2，与 Avalonia 12.1.3（SkiaSharp 3.119.4 / HarfBuzzSharp 8.3.1.3）不兼容；
+            5.1.1 依赖 SkiaSharp 3.119.2 / HarfBuzzSharp 8.3.1.3，与 Avalonia 共用同一套原生库。
+        -->
+        <PackageReference Include="Svg.Skia" VersionOverride="5.1.1" />
+        <!-- Svg.Skia 5.1.1 与 Avalonia 12.1 使用相同的 SkiaSharp 3 原生库；其托管依赖升级到 5.2.3，
+             以获得 Svg.Model 中 TypeDescriptor 用法的修复（否则 NativeAOT 发布产生 IL2026）。 -->
+        <PackageReference Include="Svg.Model" VersionOverride="5.2.3" />
+        <PackageReference Include="Svg.Custom" VersionOverride="5.2.3" />
+        <PackageReference Include="ShimSkiaSharp" VersionOverride="5.2.3" />
+        <PackageReference Include="Svg.SceneGraph" VersionOverride="5.2.3" />
+        <PackageReference Include="Svg.Animation" VersionOverride="5.2.3" />
+    </ItemGroup>
+    <ItemGroup>
+        <InternalsVisibleTo Include="StreamMark.Avalonia.Tests" />
+    </ItemGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\StreamMark.Avalonia\StreamMark.Avalonia.csproj" />
+    </ItemGroup>
+</Project>

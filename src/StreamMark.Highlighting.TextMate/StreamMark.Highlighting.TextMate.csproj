@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <Description>TextMate-based incremental syntax highlighting for StreamMark code blocks.</Description>
+    </PropertyGroup>
+    <ItemGroup>
+        <PackageReference Include="TextMateSharp" />
+        <PackageReference Include="TextMateSharp.Grammars" />
+    </ItemGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\StreamMark.Core\StreamMark.Core.csproj" />
+    </ItemGroup>
+    <ItemGroup>
+        <InternalsVisibleTo Include="StreamMark.Avalonia.Tests" />
+    </ItemGroup>
+</Project>

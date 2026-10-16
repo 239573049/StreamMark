@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <IsPackable>false</IsPackable>
+        <NoWarn>$(NoWarn);xUnit1051</NoWarn>
+    </PropertyGroup>
+    <ItemGroup>
+        <PackageReference Include="Avalonia.Headless" />
+        <PackageReference Include="Avalonia.Skia" />
+        <PackageReference Include="Avalonia.Themes.Fluent" />
+        <PackageReference Include="Microsoft.NET.Test.Sdk" />
+        <PackageReference Include="xunit.v3" />
+        <PackageReference Include="xunit.runner.visualstudio" />
+    </ItemGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\..\src\StreamMark.Avalonia\StreamMark.Avalonia.csproj" />
+        <ProjectReference Include="..\..\src\StreamMark.RaTeX\StreamMark.RaTeX.csproj" />
+        <ProjectReference Include="..\..\src\StreamMark.Highlighting.TextMate\StreamMark.Highlighting.TextMate.csproj" />
+        <ProjectReference Include="..\..\src\StreamMark.Mermaid\StreamMark.Mermaid.csproj" />
+    </ItemGroup>
+    <ItemGroup>
+        <None Include="..\StreamMark.Core.Tests\Fixtures\streaming\*.md" Link="Fixtures\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+</Project>

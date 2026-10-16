@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <Description>StreamMark core: streaming Markdown source buffer, incomplete-markdown repair, segmenter, block model and pacing. No UI dependency.</Description>
+    </PropertyGroup>
+    <ItemGroup>
+        <PackageReference Include="Markdig" />
+    </ItemGroup>
+    <ItemGroup>
+        <InternalsVisibleTo Include="StreamMark.Core.Tests" />
+        <InternalsVisibleTo Include="StreamMark.Benchmarks" />
+    </ItemGroup>
+</Project>

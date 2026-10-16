@@ -1,0 +1,20 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/StreamMark.Core/StreamMark.Core.csproj" />
+    <Project Path="src/StreamMark.Avalonia/StreamMark.Avalonia.csproj" />
+    <Project Path="src/StreamMark.Highlighting.TextMate/StreamMark.Highlighting.TextMate.csproj" />
+    <Project Path="src/StreamMark.RaTeX/StreamMark.RaTeX.csproj" />
+    <Project Path="src/StreamMark.Mermaid/StreamMark.Mermaid.csproj" />
+    <Project Path="src/StreamMark.Theme.AtomUI/StreamMark.Theme.AtomUI.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/StreamMark.Core.Tests/StreamMark.Core.Tests.csproj" />
+    <Project Path="tests/StreamMark.Avalonia.Tests/StreamMark.Avalonia.Tests.csproj" />
+  </Folder>
+  <Folder Name="/bench/">
+    <Project Path="bench/StreamMark.Benchmarks/StreamMark.Benchmarks.csproj" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/StreamMark.Gallery/StreamMark.Gallery.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,3 @@
+[submodule "native/ratex"]
+	path = native/ratex
+	url = https://github.com/erweixin/RaTeX

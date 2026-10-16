@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <Description>Maps StreamMark Md.* resources onto AtomUI design tokens, so Markdown follows the AtomUI theme (light/dark, primary color, fonts).</Description>
+        <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+    </PropertyGroup>
+    <ItemGroup>
+        <PackageReference Include="Avalonia" />
+        <PackageReference Include="AtomUI.Core" />
+    </ItemGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\StreamMark.Avalonia\StreamMark.Avalonia.csproj" />
+    </ItemGroup>
+</Project>

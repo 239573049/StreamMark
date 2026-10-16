@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <Description>StreamMark Avalonia controls: self-drawn Markdown blocks, virtualizing transcript panel and selection.</Description>
+        <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+    </PropertyGroup>
+    <ItemGroup>
+        <PackageReference Include="Avalonia" />
+    </ItemGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\StreamMark.Core\StreamMark.Core.csproj" />
+    </ItemGroup>
+</Project>

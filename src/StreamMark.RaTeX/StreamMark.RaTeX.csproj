@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <Description>LaTeX math rendering for StreamMark via the RaTeX native engine (KaTeX-compatible layout).</Description>
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+        <!-- 本机构建产物目录：native/build.sh 输出到 artifacts/native/<rid>/ -->
+        <RaTeXNativeDir>$(MSBuildThisFileDirectory)..\..\artifacts\native\</RaTeXNativeDir>
+    </PropertyGroup>
+    <ItemGroup>
+        <PackageReference Include="Avalonia" />
+    </ItemGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\StreamMark.Core\StreamMark.Core.csproj" />
+        <ProjectReference Include="..\StreamMark.Avalonia\StreamMark.Avalonia.csproj" />
+    </ItemGroup>
+    <ItemGroup>
+        <!-- KaTeX 字体（OFL）随包嵌入，绘制时按显示列表中的字体名加载 -->
+        <EmbeddedResource Include="..\..\native\ratex\fonts\*.ttf" LogicalName="StreamMark.RaTeX.Fonts.%(Filename)%(Extension)" />
+    </ItemGroup>
+    <ItemGroup>
+        <!-- 已构建的原生库按 RID 打包到 runtimes/<rid>/native/（NuGet 使用方按自己的 RID 自动选用）。
+             仓库内的项目引用方由根目录 Directory.Build.targets 按其目标 RID 复制。 -->
+        <None Include="$(RaTeXNativeDir)**\*ratex_ffi.*" Exclude="$(RaTeXNativeDir)**\*.a;$(RaTeXNativeDir)**\*.lib;$(RaTeXNativeDir)**\*.d" Pack="true" PackagePath="runtimes\%(RecursiveDir)native\%(Filename)%(Extension)" />
+    </ItemGroup>
+</Project>

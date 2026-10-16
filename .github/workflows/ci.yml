@@ -1,0 +1,137 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      bench:
+        description: Run BenchmarkDotNet
+        type: boolean
+        default: false
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  # RaTeX C ABI 动态库：6 个桌面 RID，各自在原生 runner 上构建
+  native-ratex:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { rid: win-x64,     os: windows-latest }
+          - { rid: win-arm64,   os: windows-11-arm }
+          - { rid: linux-x64,   os: ubuntu-latest }
+          - { rid: linux-arm64, os: ubuntu-24.04-arm }
+          - { rid: osx-x64,     os: macos-15-intel }
+          - { rid: osx-arm64,   os: macos-latest }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native/ratex -> ../../artifacts/cargo
+      - name: Build (Unix)
+        if: runner.os != 'Windows'
+        run: ./native/build.sh ${{ matrix.rid }}
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./native/build.ps1 -Rid ${{ matrix.rid }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ratex-${{ matrix.rid }}
+          path: artifacts/native/${{ matrix.rid }}/
+          if-no-files-found: error
+
+  build-test:
+    needs: native-ratex
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { rid: linux-x64, os: ubuntu-latest }
+          - { rid: osx-arm64, os: macos-latest }
+          - { rid: win-x64,   os: windows-latest }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - uses: actions/download-artifact@v4
+        with:
+          name: ratex-${{ matrix.rid }}
+          path: artifacts/native/${{ matrix.rid }}
+      - run: dotnet build StreamMark.slnx -c Release
+      - name: Test
+        run: dotnet test StreamMark.slnx -c Release --no-build
+        env:
+          STREAMMARK_SNAPSHOT_DIR: ${{ github.workspace }}/artifacts/snapshots
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: snapshots-${{ matrix.rid }}
+          path: artifacts/snapshots/
+          if-no-files-found: ignore
+
+  # NativeAOT：发布 Gallery，要求 0 个裁剪 / AOT 警告，并运行 --smoke
+  aot-smoke:
+    needs: native-ratex
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { rid: linux-x64, os: ubuntu-latest }
+          - { rid: osx-arm64, os: macos-latest }
+          - { rid: win-x64,   os: windows-latest }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - uses: actions/download-artifact@v4
+        with:
+          name: ratex-${{ matrix.rid }}
+          path: artifacts/native/${{ matrix.rid }}
+      - name: Publish
+        shell: bash
+        run: |
+          dotnet publish samples/StreamMark.Gallery -c Release -r ${{ matrix.rid }} -o artifacts/aot 2>&1 | tee publish.log
+          if grep -E "warning IL[0-9]+" publish.log; then
+            echo "::error::NativeAOT publish produced IL warnings"
+            exit 1
+          fi
+      - name: Copy native library next to the binary
+        shell: bash
+        run: cp artifacts/native/${{ matrix.rid }}/* artifacts/aot/
+      - name: Smoke
+        shell: bash
+        run: ./artifacts/aot/StreamMark.Gallery --smoke
+
+  bench:
+    if: github.event_name == 'workflow_dispatch' && inputs.bench
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - run: dotnet run -c Release --project bench/StreamMark.Benchmarks -- --filter '*' --exporters github
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmarks
+          path: BenchmarkDotNet.Artifacts/results/

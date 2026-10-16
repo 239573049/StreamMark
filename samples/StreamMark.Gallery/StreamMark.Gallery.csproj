@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <OutputType>WinExe</OutputType>
+        <IsPackable>false</IsPackable>
+        <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+        <!-- 演示程序兼作 NativeAOT 冒烟测试：dotnet publish -r <rid> 后以 smoke 参数运行 -->
+        <PublishAot>true</PublishAot>
+    </PropertyGroup>
+    <ItemGroup>
+        <PackageReference Include="Avalonia.Desktop" />
+        <PackageReference Include="Avalonia.Themes.Fluent" />
+        <PackageReference Include="Avalonia.Headless" />
+    </ItemGroup>
+    <ItemGroup>
+        <EmbeddedResource Include="Samples\*.md" LogicalName="Samples.%(Filename)%(Extension)" />
+    </ItemGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\..\src\StreamMark.Core\StreamMark.Core.csproj" />
+        <ProjectReference Include="..\..\src\StreamMark.Avalonia\StreamMark.Avalonia.csproj" />
+        <ProjectReference Include="..\..\src\StreamMark.RaTeX\StreamMark.RaTeX.csproj" />
+        <ProjectReference Include="..\..\src\StreamMark.Highlighting.TextMate\StreamMark.Highlighting.TextMate.csproj" />
+        <ProjectReference Include="..\..\src\StreamMark.Mermaid\StreamMark.Mermaid.csproj" />
+    </ItemGroup>
+</Project>

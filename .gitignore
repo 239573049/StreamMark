@@ -1,0 +1,10 @@
+bin/
+obj/
+*.user
+.vs/
+.idea/
+BenchmarkDotNet.Artifacts/
+snapshots/
+native/ratex/target/
+artifacts/
+*.DotSettings.user

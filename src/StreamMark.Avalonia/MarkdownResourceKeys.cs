@@ -1,0 +1,26 @@
+namespace StreamMark.Avalonia;
+
+/// <summary>
+/// StreamMark 公开的资源键。宿主（例如 StreamMark.Theme.AtomUI）通过覆盖这些键来改变外观；
+/// 所有键统一使用 <c>Md.</c> 前缀，避免与宿主资源冲突。
+/// </summary>
+public static class MarkdownResourceKeys
+{
+    public const string Foreground = "Md.Foreground";
+    public const string SecondaryForeground = "Md.SecondaryForeground";
+    public const string LinkForeground = "Md.LinkForeground";
+    public const string SelectionBackground = "Md.SelectionBackground";
+    public const string FontFamily = "Md.FontFamily";
+    public const string MonospaceFontFamily = "Md.MonospaceFontFamily";
+    public const string FontSize = "Md.FontSize";
+    public const string LineHeight = "Md.LineHeight";
+    public const string BlockSpacing = "Md.BlockSpacing";
+    public const string CodeBackground = "Md.CodeBackground";
+    public const string CodeBorderBrush = "Md.CodeBorderBrush";
+    public const string InlineCodeBackground = "Md.InlineCodeBackground";
+    public const string QuoteBorderBrush = "Md.QuoteBorderBrush";
+    public const string TableBorderBrush = "Md.TableBorderBrush";
+    public const string TableHeaderBackground = "Md.TableHeaderBackground";
+    public const string CornerRadius = "Md.CornerRadius";
+    public const string HoverBackground = "Md.HoverBackground";
+}

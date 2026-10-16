@@ -1,0 +1,16 @@
+<Project>
+    <!--
+        仓库内的可执行项目（示例、测试、基准）通过项目引用使用 StreamMark.RaTeX：
+        SDK 不会把 RuntimeIdentifier 传给被引用项目，所以在使用方自己的构建中按其目标 RID 复制 RaTeX 原生库。
+        （NuGet 使用方由包内 runtimes/<rid>/native 自动选用，不经过这里。）
+    -->
+    <PropertyGroup Condition="'$(IsPackable)' != 'true'">
+        <_StreamMarkNativeRid>$(RuntimeIdentifier)</_StreamMarkNativeRid>
+        <_StreamMarkNativeRid Condition="'$(_StreamMarkNativeRid)' == ''">$(NETCoreSdkPortableRuntimeIdentifier)</_StreamMarkNativeRid>
+        <_StreamMarkNativeDir>$(MSBuildThisFileDirectory)artifacts\native\$(_StreamMarkNativeRid)\</_StreamMarkNativeDir>
+    </PropertyGroup>
+    <ItemGroup Condition="'$(IsPackable)' != 'true' and Exists('$(_StreamMarkNativeDir)')">
+        <None Include="$(_StreamMarkNativeDir)*ratex_ffi.*" Exclude="$(_StreamMarkNativeDir)*.a;$(_StreamMarkNativeDir)*.lib;$(_StreamMarkNativeDir)*.d"
+              Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Visible="false" />
+    </ItemGroup>
+</Project>

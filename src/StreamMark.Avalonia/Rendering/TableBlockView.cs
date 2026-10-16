@@ -1,0 +1,246 @@
+using System.Text;
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Input;
+using Avalonia.Input.Platform;
+using Avalonia.Media;
+using StreamMark.Avalonia.Selection;
+using StreamMark.Core.Model;
+
+namespace StreamMark.Avalonia.Rendering;
+
+/// <summary>
+/// 表格：自定义布局（不使用 Grid，流式追加行时不会触发 Grid 的测量问题）。
+/// 列宽取各列自然宽度，超出可用宽度时按比例收缩并换行，仍放不下时允许横向滚动。
+/// 悬停时右上角显示"复制为 Markdown"。
+/// </summary>
+public sealed class TableBlockView : BlockView
+{
+    private const double CellPaddingX = 10;
+    private const double CellPaddingY = 6;
+    private const double MinColumn = 64;
+    private const double MaxColumn = 420;
+
+    private readonly List<List<TextSegmentView>> _cells = [];
+    private readonly IconButton _copy = new() { Icon = MarkdownIcons.Copy, IsVisible = false };
+    private double[] _columnWidths = [];
+    private double[] _rowHeights = [];
+    private double _offsetX;
+    private double _contentWidth;
+
+    public TableBlockView()
+    {
+        ClipToBounds = true;
+        AddChild(_copy);
+        _copy.Click += async (_, _) =>
+        {
+            if (TopLevel.GetTopLevel(this)?.Clipboard is { } clipboard && Block is TableBlock table)
+            {
+                await clipboard.SetTextAsync(ToMarkdown(table));
+            }
+        };
+    }
+
+    protected override void OnUpdate(RenderContext context, MarkdownBlock? previous, MarkdownBlock block, int topKey, ref int segment, bool contextChanged)
+    {
+        var table = (TableBlock)block;
+        _copy.Foreground = context.Style.SecondaryForeground;
+        _copy.HoverBackground = context.Style.HoverBackground;
+        for (var r = 0; r < table.Rows.Length; r++)
+        {
+            if (r >= _cells.Count)
+            {
+                _cells.Add([]);
+            }
+            var row = table.Rows[r];
+            var views = _cells[r];
+            var columns = Math.Max(row.Cells.Length, table.Columns.Length);
+            while (views.Count < columns)
+            {
+                var cell = new TextSegmentView();
+                views.Add(cell);
+                AddChild(cell);
+            }
+            while (views.Count > columns)
+            {
+                RemoveChild(views[^1]);
+                views.RemoveAt(views.Count - 1);
+            }
+            for (var c = 0; c < columns; c++)
+            {
+                var content = c < row.Cells.Length ? row.Cells[c] : InlineContent.Empty;
+                var alignment = c < table.Columns.Length ? table.Columns[c] switch
+                {
+                    TableAlignment.Center => TextAlignment.Center,
+                    TableAlignment.Right => TextAlignment.Right,
+                    _ => TextAlignment.Left,
+                } : TextAlignment.Left;
+                views[c].Set(context, KeyFor(context, topKey, ref segment), content, context.Style.FontSize,
+                    row.IsHeader ? FontWeight.SemiBold : FontWeight.Normal, alignment: alignment);
+            }
+        }
+        while (_cells.Count > table.Rows.Length)
+        {
+            _cells[^1].ForEach(RemoveChild);
+            _cells.RemoveAt(_cells.Count - 1);
+        }
+        InvalidateMeasure();
+    }
+
+    protected override Size MeasureOverride(Size availableSize)
+    {
+        var columns = _cells.Count == 0 ? 0 : _cells.Max(r => r.Count);
+        var natural = new double[columns];
+        foreach (var row in _cells)
+        {
+            for (var c = 0; c < row.Count; c++)
+            {
+                row[c].Measure(Size.Infinity);
+                natural[c] = Math.Max(natural[c], Math.Min(MaxColumn, row[c].DesiredSize.Width + CellPaddingX * 2));
+            }
+        }
+        for (var c = 0; c < columns; c++)
+        {
+            natural[c] = Math.Max(natural[c], MinColumn);
+        }
+
+        var available = double.IsFinite(availableSize.Width) ? availableSize.Width : natural.Sum();
+        var total = natural.Sum();
+        _columnWidths = natural;
+        if (total > available && total > 0)
+        {
+            // 按比例收缩，但不小于最小列宽
+            var shrinkable = natural.Sum(w => w - MinColumn);
+            var excess = total - available;
+            _columnWidths = natural.Select(w => shrinkable > 0 ? w - (w - MinColumn) / shrinkable * Math.Min(excess, shrinkable) : w).ToArray();
+        }
+        _contentWidth = _columnWidths.Sum();
+
+        _rowHeights = new double[_cells.Count];
+        for (var r = 0; r < _cells.Count; r++)
+        {
+            var height = 0.0;
+            for (var c = 0; c < _cells[r].Count; c++)
+            {
+                _cells[r][c].Measure(new Size(Math.Max(1, _columnWidths[c] - CellPaddingX * 2), double.PositiveInfinity));
+                height = Math.Max(height, _cells[r][c].DesiredSize.Height);
+            }
+            _rowHeights[r] = height + CellPaddingY * 2;
+        }
+        _copy.Measure(Size.Infinity);
+        _offsetX = Math.Clamp(_offsetX, 0, Math.Max(0, _contentWidth - available));
+        return new Size(Math.Min(_contentWidth, available) + 1, _rowHeights.Sum() + 1);
+    }
+
+    protected override Size ArrangeOverride(Size finalSize)
+    {
+        double y = 0;
+        for (var r = 0; r < _cells.Count; r++)
+        {
+            var x = -_offsetX;
+            for (var c = 0; c < _cells[r].Count; c++)
+            {
+                _cells[r][c].Arrange(new Rect(x + CellPaddingX, y + CellPaddingY, Math.Max(1, _columnWidths[c] - CellPaddingX * 2), _rowHeights[r] - CellPaddingY * 2));
+                x += _columnWidths[c];
+            }
+            y += _rowHeights[r];
+        }
+        var visibleRight = Math.Min(finalSize.Width, _contentWidth + 1);
+        _copy.Arrange(new Rect(visibleRight - _copy.DesiredSize.Width - 3, 3, _copy.DesiredSize.Width, _copy.DesiredSize.Height));
+        return finalSize;
+    }
+
+    public override void Render(DrawingContext context)
+    {
+        if (Context is null || _rowHeights.Length == 0)
+        {
+            return;
+        }
+        var style = Context.Style;
+        var pen = new Pen(style.TableBorderBrush, 1);
+        var width = _contentWidth;
+        var height = _rowHeights.Sum();
+        using (context.PushTransform(Matrix.CreateTranslation(-_offsetX, 0)))
+        {
+            if (Block is TableBlock { Rows.Length: > 0 } table && table.Rows[0].IsHeader)
+            {
+                context.FillRectangle(style.TableHeaderBackground, new Rect(0, 0, width, _rowHeights[0]));
+            }
+            var y = 0.5;
+            context.DrawLine(pen, new Point(0, y), new Point(width, y));
+            foreach (var h in _rowHeights)
+            {
+                y += h;
+                context.DrawLine(pen, new Point(0, Math.Round(y) - 0.5), new Point(width, Math.Round(y) - 0.5));
+            }
+            var x = 0.5;
+            context.DrawLine(pen, new Point(x, 0), new Point(x, height));
+            foreach (var w in _columnWidths)
+            {
+                x += w;
+                context.DrawLine(pen, new Point(Math.Round(x) - 0.5, 0), new Point(Math.Round(x) - 0.5, height));
+            }
+        }
+    }
+
+    protected override void OnPointerEntered(PointerEventArgs e)
+    {
+        base.OnPointerEntered(e);
+        _copy.IsVisible = true;
+    }
+
+    protected override void OnPointerExited(PointerEventArgs e)
+    {
+        base.OnPointerExited(e);
+        _copy.IsVisible = false;
+    }
+
+    protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
+    {
+        var dx = e.Delta.X != 0 ? -e.Delta.X : e.KeyModifiers.HasFlag(KeyModifiers.Shift) ? -e.Delta.Y : 0;
+        if (dx == 0 || _contentWidth <= Bounds.Width)
+        {
+            base.OnPointerWheelChanged(e);
+            return;
+        }
+        _offsetX = Math.Clamp(_offsetX + dx * 40, 0, Math.Max(0, _contentWidth - Bounds.Width + 1));
+        InvalidateArrange();
+        InvalidateVisual();
+        e.Handled = true;
+    }
+
+    public override TextSegmentView? LastSegment() => _cells.Count > 0 && _cells[^1].Count > 0 ? _cells[^1][^1] : null;
+
+    public override IEnumerable<ISelectableSegment> Segments() => _cells.SelectMany(r => r);
+
+    /// <summary>以 GitHub 表格语法输出。</summary>
+    public static string ToMarkdown(TableBlock table)
+    {
+        var sb = new StringBuilder();
+        for (var r = 0; r < table.Rows.Length; r++)
+        {
+            sb.Append('|');
+            foreach (var cell in table.Rows[r].Cells)
+            {
+                sb.Append(' ').Append(BlockText.PlainText(cell).Replace("|", "\\|")).Append(" |");
+            }
+            sb.Append('\n');
+            if (r == 0 && table.Rows[0].IsHeader)
+            {
+                sb.Append('|');
+                foreach (var column in table.Columns)
+                {
+                    sb.Append(column switch
+                    {
+                        TableAlignment.Left => " :--- |",
+                        TableAlignment.Center => " :---: |",
+                        TableAlignment.Right => " ---: |",
+                        _ => " --- |",
+                    });
+                }
+                sb.Append('\n');
+            }
+        }
+        return sb.ToString();
+    }
+}
