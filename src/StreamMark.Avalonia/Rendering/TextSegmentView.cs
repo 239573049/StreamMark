@@ -96,6 +96,34 @@ public sealed class TextSegmentView : Control, ISelectableSegment
         {
             weight = FontWeight.Normal;
         }
+        // 外层 HTML 盒子继承的对齐、字号、粗细与颜色
+        if (context.Inherited is { } inherited)
+        {
+            if (alignment == TextAlignment.Left && inherited.Align != TextAlign.Inherit)
+            {
+                alignment = inherited.Align switch
+                {
+                    TextAlign.Center => TextAlignment.Center,
+                    TextAlign.Right => TextAlignment.Right,
+                    TextAlign.Justify => TextAlignment.Justify,
+                    _ => TextAlignment.Left,
+                };
+            }
+            // 绝对字号按与正文字号的比例缩放（标题保持相对大小）
+            if (inherited.FontSize is { } px)
+            {
+                fontSize *= px / context.Style.FontSize;
+            }
+            else if (inherited.FontScale is { } scale)
+            {
+                fontSize *= scale;
+            }
+            if (inherited.Bold == true && weight < FontWeight.Bold)
+            {
+                weight = FontWeight.Bold;
+            }
+            foreground ??= HtmlPaint.Foreground(context, inherited.Foreground);
+        }
         var keyChanged = Key != key;
         Key = key;
         var changed = !ReferenceEquals(_context, context) || !ReferenceEquals(_content, content) && _content != content ||
@@ -618,6 +646,13 @@ public sealed class TextSegmentView : Control, ISelectableSegment
                 case Images.ImageLoadStatus.NeedsConsent:
                     slot.Approve();
                     break;
+                case Images.ImageLoadStatus.Loaded when LinkAt(position) is >= 0 and var imageLink:
+                    {
+                        // 链接中的图片（徽章、赞助商标志）：打开链接
+                        var target = _content.Links[imageLink];
+                        RaiseEvent(new LinkClickedEventArgs(LinkClickedEvent, this, target.Url, target.Title));
+                        break;
+                    }
                 case Images.ImageLoadStatus.Loaded when slot.Image is { } loaded:
                     var args = new ImageClickedEventArgs(ImageClickedEvent, this, slot.Url, imageObject?.Alt, loaded);
                     RaiseEvent(args);
@@ -655,7 +690,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
         private readonly FontWeight _weight;
         private readonly IBrush _foreground;
         private readonly double _maxWidth;
-        private readonly Dictionary<(InlineStyle, int), TextRunProperties> _properties = [];
+        private readonly Dictionary<(InlineStyle, int, int), TextRunProperties> _properties = [];
 
         public InlineTextSource(TextSegmentView owner, RenderContext context, InlineContent content, double fontSize, FontWeight weight, IBrush foreground, double maxWidth)
         {
@@ -695,6 +730,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
 
             var style = InlineStyle.None;
             var component = -1;
+            var textStyle = -1;
             foreach (var span in _content.Spans)
             {
                 if (span.End <= textSourceIndex)
@@ -708,18 +744,19 @@ public sealed class TextSegmentView : Control, ISelectableSegment
                 }
                 style = span.Style;
                 component = span.ComponentIndex;
+                textStyle = span.TextStyleIndex;
                 end = Math.Min(end, span.End);
                 break;
             }
 
-            var properties = PropertiesFor(style, component);
-            return CreateCharacters(text, textSourceIndex, end, properties, style, component);
+            var properties = PropertiesFor(style, component, textStyle);
+            return CreateCharacters(text, textSourceIndex, end, properties, style, component, textStyle);
         }
 
         // 回退字体：Avalonia 在为缺字的文字找回退字体时，会优先复用"上一段"的回退字体而不检查字重 / 字形，
         // 导致"中文 **粗体**"中的粗体沿用常规字重的回退字体（反之亦然）。这里自己按本段的字重、字形解析回退字体，
         // 让每段文字的主字体就能覆盖其字符，从而不进入那条复用路径。
-        private TextRun CreateCharacters(string text, int start, int end, TextRunProperties properties, InlineStyle style, int component)
+        private TextRun CreateCharacters(string text, int start, int end, TextRunProperties properties, InlineStyle style, int component, int textStyle)
         {
             var map = GlyphMap(properties);
             var first = Rune.GetRuneAt(text, start);
@@ -738,7 +775,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
                 var typeface = properties.Typeface;
                 if (FontManager.Current.TryMatchCharacter(first.Value, typeface.Style, typeface.Weight, typeface.Stretch, typeface.FontFamily, null, out var fallback))
                 {
-                    return new TextCharacters(text.AsMemory(start, length), FallbackProperties(properties, style, component, fallback));
+                    return new TextCharacters(text.AsMemory(start, length), FallbackProperties(properties, style, component, textStyle, fallback));
                 }
                 return new TextCharacters(text.AsMemory(start, length), properties);
             }
@@ -760,7 +797,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
             map is null || Rune.IsWhiteSpace(rune) || rune.Value < 0x20 || rune.Value == InlineObject.Placeholder || map.Value.ContainsGlyph(rune.Value);
 
         private readonly Dictionary<TextRunProperties, CharacterToGlyphMap?> _maps = [];
-        private readonly Dictionary<(InlineStyle, int, string), TextRunProperties> _fallbacks = [];
+        private readonly Dictionary<(InlineStyle, int, int, string), TextRunProperties> _fallbacks = [];
 
         private CharacterToGlyphMap? GlyphMap(TextRunProperties properties)
         {
@@ -812,9 +849,9 @@ public sealed class TextSegmentView : Control, ISelectableSegment
             return medium ?? typeface;
         }
 
-        private TextRunProperties FallbackProperties(TextRunProperties properties, InlineStyle style, int component, Typeface fallback)
+        private TextRunProperties FallbackProperties(TextRunProperties properties, InlineStyle style, int component, int textStyle, Typeface fallback)
         {
-            var key = (style, component, fallback.FontFamily.Name);
+            var key = (style, component, textStyle, fallback.FontFamily.Name);
             if (!_fallbacks.TryGetValue(key, out var result))
             {
                 result = new GenericTextRunProperties(HeavyEnough(fallback.FontFamily, properties.Typeface),
@@ -869,18 +906,29 @@ public sealed class TextSegmentView : Control, ISelectableSegment
                 ? new Size(w, double.TryParse(attributes["height"]?.TrimEnd('p', 'x'), System.Globalization.CultureInfo.InvariantCulture, out var h) && h > 0 ? h : double.NaN)
                 : null;
 
-        private TextRunProperties PropertiesFor(InlineStyle style, int component = -1)
+        private TextRunProperties PropertiesFor(InlineStyle style, int component = -1, int textStyle = -1)
         {
-            if (_properties.TryGetValue((style, component), out var cached))
+            if (_properties.TryGetValue((style, component, textStyle), out var cached))
             {
                 return cached;
             }
             var s = _context.Style;
+            // HTML 行内样式（span style、font color 等）
+            var html = textStyle >= 0 && textStyle < _content.TextStyles.Length ? _content.TextStyles[textStyle] : null;
             var isCode = style.HasFlag(InlineStyle.Code) || style.HasFlag(InlineStyle.Keyboard);
             var family = isCode ? s.MonospaceFontFamily : s.FontFamily;
-            var weight = style.HasFlag(InlineStyle.Bold) ? FontWeight.Bold : _weight;
-            var fontStyle = style.HasFlag(InlineStyle.Italic) ? FontStyle.Italic : FontStyle.Normal;
+            var weight = style.HasFlag(InlineStyle.Bold) || html?.Bold == true ? FontWeight.Bold : html?.Bold == false ? FontWeight.Normal : _weight;
+            var italic = style.HasFlag(InlineStyle.Italic) || (html?.Italic ?? _context.Inherited?.Italic) == true;
+            var fontStyle = italic ? FontStyle.Italic : FontStyle.Normal;
             var size = _fontSize;
+            if (html?.FontSize is { } px)
+            {
+                size = Math.Clamp(px, Core.Html.CssStyle.MinFontSize, Core.Html.CssStyle.MaxFontSize);
+            }
+            else if (html?.FontScale is { } scale)
+            {
+                size *= scale;
+            }
             if (isCode)
             {
                 size *= 0.9;
@@ -919,6 +967,13 @@ public sealed class TextSegmentView : Control, ISelectableSegment
             }
             IBrush? background = isCode ? s.InlineCodeBackground : style.HasFlag(InlineStyle.Mark) ? s.MarkBackground : null;
 
+            if (html is not null)
+            {
+                var htmlBackground = HtmlPaint.Background(_context, html.Background);
+                foreground = HtmlPaint.Foreground(_context, html.Foreground, html.Background) ?? foreground;
+                background = htmlBackground ?? background;
+            }
+
             // 成对行内组件（如 <cite>）的样式覆盖
             if (component >= 0 && component < _content.Components.Length &&
                 _context.Plugins.FindInlineComponent(_content.Components[component].Name)?.GetStyle(_content.Components[component], s) is { } custom)
@@ -939,7 +994,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
                 foreground,
                 background,
                 baseline);
-            _properties[(style, component)] = properties;
+            _properties[(style, component, textStyle)] = properties;
             return properties;
         }
     }

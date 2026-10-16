@@ -37,15 +37,126 @@ internal static class MarkdigMapper
     public static ImmutableArray<MarkdownBlock> MapDocument(MarkdownDocument document, MarkdownProfile profile, OffsetMap map)
     {
         var ctx = new MapContext(profile, map);
-        var builder = ImmutableArray.CreateBuilder<MarkdownBlock>(document.Count);
-        foreach (var block in document)
+        return MapSiblings(document, ctx);
+    }
+
+    /// <summary>
+    /// 映射一组兄弟块。原始 HTML 块连同夹在其中的 Markdown 块（GFM：<c>&lt;div&gt;</c>、空行、Markdown、空行、<c>&lt;/div&gt;</c>）
+    /// 一起交给 HTML 树构建器，合并为一个块；含不支持元素的 HTML 按源码显示。
+    /// </summary>
+    private static ImmutableArray<MarkdownBlock> MapSiblings(ContainerBlock container, MapContext ctx)
+    {
+        var builder = ImmutableArray.CreateBuilder<MarkdownBlock>(container.Count);
+        HtmlGroup? group = null;
+        foreach (var block in container)
         {
-            if (Map(block, ctx) is { } mapped)
+            if (block is MdHtmlBlock html)
+            {
+                group ??= new HtmlGroup();
+                group.AddHtml(html, LinesToString(html), RangeOf(html, ctx));
+                if (!group.Tree.HasOpenElements)
+                {
+                    group.Finish(builder);
+                    group = null;
+                }
+                continue;
+            }
+            var mapped = Map(block, ctx);
+            if (group is not null)
+            {
+                group.AddMarkdown(mapped, RangeOf(block, ctx));
+            }
+            else if (mapped is not null)
             {
                 builder.Add(mapped);
             }
         }
+        group?.Finish(builder);
         return builder.ToImmutable();
+    }
+
+    /// <summary>正在合并的一组 HTML 与 Markdown 兄弟块。</summary>
+    private sealed class HtmlGroup
+    {
+        // 原样映射的结果（含不支持元素时退回这些）
+        private readonly List<MarkdownBlock> _fallback = [];
+        private SourceRange _range;
+        private bool _hasRange;
+
+        public Html.HtmlTreeBuilder Tree { get; } = new();
+
+        public void AddHtml(MdHtmlBlock html, string source, SourceRange range)
+        {
+            Extend(range);
+            Tree.Feed(source);
+            _fallback.Add(new Model.HtmlBlock(source) { Range = range });
+        }
+
+        public void AddMarkdown(MarkdownBlock? block, SourceRange range)
+        {
+            Extend(range);
+            if (block is null)
+            {
+                return;
+            }
+            Tree.AddMarkdown(block);
+            _fallback.Add(block);
+        }
+
+        private void Extend(SourceRange range)
+        {
+            if (!_hasRange)
+            {
+                _range = range;
+                _hasRange = true;
+                return;
+            }
+            var start = Math.Min(_range.Start, range.Start);
+            _range = new SourceRange(start, Math.Max(_range.End, range.End) - start);
+        }
+
+        public void Finish(ImmutableArray<MarkdownBlock>.Builder output)
+        {
+            if (Tree.HasUnknownElements)
+            {
+                output.AddRange(_fallback);
+                return;
+            }
+            var blocks = Html.HtmlMapper.MapChildren(Tree.Root);
+            if (!Tree.HasElements && blocks.All(b => b is Model.ParagraphBlock))
+            {
+                // 只有注释（或零散文字）：注释不显示，文字按源码显示
+                output.AddRange(_fallback.Where(b => b is not Model.HtmlBlock h || !IsCommentOnly(h.Html)));
+                return;
+            }
+            switch (blocks.Length)
+            {
+                case 0:
+                    return;
+                case 1:
+                    output.Add(blocks[0] with { Range = _range });
+                    return;
+                default:
+                    // 多个顶层元素合为一个块：顶层块的 key 是源码起点，必须唯一
+                    output.Add(new HtmlBoxBlock("#fragment", HtmlBoxStyle.Default, HtmlTextStyle.Default, blocks) { Range = _range });
+                    return;
+            }
+        }
+
+        private static bool IsCommentOnly(string html)
+        {
+            var text = html.AsSpan().Trim();
+            while (text.StartsWith("<!--"))
+            {
+                var end = text.IndexOf("-->");
+                if (end < 0)
+                {
+                    return true;
+                }
+                text = text[(end + 3)..].TrimStart();
+            }
+            return text.IsEmpty;
+        }
     }
 
     private static MarkdownBlock? Map(MdBlock block, MapContext ctx)
@@ -102,18 +213,7 @@ internal static class MarkdigMapper
         return new SourceRange(start, ctx.Map.ToSource(span.End + 1) - start);
     }
 
-    internal static ImmutableArray<MarkdownBlock> MapChildren(ContainerBlock container, MapContext ctx)
-    {
-        var builder = ImmutableArray.CreateBuilder<MarkdownBlock>(container.Count);
-        foreach (var child in container)
-        {
-            if (Map(child, ctx) is { } mapped)
-            {
-                builder.Add(mapped);
-            }
-        }
-        return builder.ToImmutable();
-    }
+    internal static ImmutableArray<MarkdownBlock> MapChildren(ContainerBlock container, MapContext ctx) => MapSiblings(container, ctx);
 
     private static Model.CodeBlock MapFencedCode(FencedCodeBlock fenced)
     {
@@ -340,7 +440,7 @@ internal static class MarkdigMapper
                         break;
                     }
                 case LinkInline { IsImage: true } image:
-                    AddObject(InlineObjectKind.Image, image.Url ?? "", alt: PlainText(image), title: image.Title);
+                    AddObject(InlineObjectKind.Image, image.Url ?? "", alt: PlainText(image), title: image.Title, link: link);
                     break;
                 case LinkInline anchor:
                     {
@@ -394,15 +494,66 @@ internal static class MarkdigMapper
             }
         }
 
-        // 行内 HTML：只解释 <br>，其余标签按原文显示（可见、安全）
+        // 段落中的行内 HTML 标签（<strong>…</strong> 可以跨软换行、跨 Markdown 强调）：
+        // 开始标签压栈、结束标签出栈，栈中的样式 / 链接 / 文字样式作用于其间所有文字。不支持的标签按原文显示
+        private readonly List<(string Name, InlineStyle Style, int Link, int TextStyle, HtmlTextStyle Current)> _html = [];
+        private readonly List<HtmlTextStyle> _textStyles = [];
+
         private void VisitHtml(string tag, InlineStyle style, int link, int component)
         {
-            if (tag.StartsWith("<br", StringComparison.OrdinalIgnoreCase))
+            if (!HtmlTagReader.TryRead(tag.AsSpan(), out var parsed) || !Html.HtmlElements.Inline.Contains(parsed.Name))
             {
-                Append("\n", style, link, component);
+                if (tag.StartsWith("<!--", StringComparison.Ordinal))
+                {
+                    return;
+                }
+                Append(tag, style, link, component);
                 return;
             }
-            Append(tag, style, link, component);
+            var name = parsed.Name.ToLowerInvariant();
+            if (parsed.IsClosing)
+            {
+                var index = _html.FindLastIndex(f => f.Name == name);
+                if (index >= 0)
+                {
+                    _html.RemoveRange(index, _html.Count - index);
+                }
+                return;
+            }
+            switch (name)
+            {
+                case "br":
+                    Append("\n", style, link, component);
+                    return;
+                case "wbr" or "source":
+                    return;
+                case "img":
+                    AddObject(InlineObjectKind.Image, parsed.Attributes["src"] ?? "", alt: parsed.Attributes["alt"], title: parsed.Attributes["title"], attributes: parsed.Attributes);
+                    return;
+            }
+            if (parsed.IsSelfClosing)
+            {
+                return;
+            }
+            var outer = _html.Count > 0 ? _html[^1] : (Name: "", Style: InlineStyle.None, Link: -1, TextStyle: -1, Current: HtmlTextStyle.Default);
+            var frameStyle = outer.Style | Html.HtmlInlineBuilder.StyleFor(name);
+            var frameLink = outer.Link;
+            if (name == "a" && parsed.Attributes["href"] is { Length: > 0 } href)
+            {
+                frameLink = AddLink(href.Trim(), parsed.Attributes["title"], isAutoLink: false);
+                frameStyle |= InlineStyle.Link;
+            }
+            var (_, own) = Html.CssStyle.FromAttributes(name, parsed.Attributes);
+            own = own with { Align = TextAlign.Inherit };
+            var current = outer.Current;
+            var textStyle = outer.TextStyle;
+            if (!own.IsDefault)
+            {
+                current = own.Over(current);
+                _textStyles.Add(current);
+                textStyle = _textStyles.Count - 1;
+            }
+            _html.Add((name, frameStyle, frameLink, textStyle, current));
         }
 
         private static InlineStyle EmphasisStyle(EmphasisInline emphasis) => emphasis.DelimiterChar switch
@@ -437,13 +588,23 @@ internal static class MarkdigMapper
             return _links.Count - 1;
         }
 
-        private void AddObject(InlineObjectKind kind, string value, string? alt = null, string? title = null, bool flag = false, ComponentAttributes? attributes = null)
+        private void AddObject(InlineObjectKind kind, string value, string? alt = null, string? title = null, bool flag = false, ComponentAttributes? attributes = null, int link = -1)
         {
             _objects.Add(new InlineObject(_text.Length, kind, value, alt, string.IsNullOrEmpty(title) ? null : title, flag)
             {
                 Attributes = attributes ?? ComponentAttributes.Empty,
             });
+            var offset = _text.Length;
             _text.Append(InlineObject.Placeholder);
+            if (link < 0 && _html.Count > 0)
+            {
+                link = _html[^1].Link;
+            }
+            if (kind == InlineObjectKind.Image && link >= 0)
+            {
+                // [![徽章](图片)](链接) 与 <a href><img></a>：图片占位字符也带链接，点击打开链接
+                _spans.Add(new InlineSpan(offset, 1, InlineStyle.Link, link));
+            }
         }
 
         private void Append(ReadOnlySpan<char> text, InlineStyle style, int link, int component)
@@ -452,22 +613,33 @@ internal static class MarkdigMapper
             {
                 return;
             }
+            var textStyle = -1;
+            if (_html.Count > 0)
+            {
+                var frame = _html[^1];
+                style |= frame.Style;
+                if (link < 0)
+                {
+                    link = frame.Link;
+                }
+                textStyle = frame.TextStyle;
+            }
             var start = _text.Length;
             _text.Append(text);
-            if (style == InlineStyle.None && link < 0 && component < 0)
+            if (style == InlineStyle.None && link < 0 && component < 0 && textStyle < 0)
             {
                 return;
             }
             // 与前一个相邻且样式相同的区间合并
-            if (_spans.Count > 0 && _spans[^1] is var last && last.End == start && last.Style == style && last.LinkIndex == link && last.ComponentIndex == component)
+            if (_spans.Count > 0 && _spans[^1] is var last && last.End == start && last.Style == style && last.LinkIndex == link && last.ComponentIndex == component && last.TextStyleIndex == textStyle)
             {
                 _spans[^1] = last with { Length = last.Length + text.Length };
                 return;
             }
-            _spans.Add(new InlineSpan(start, text.Length, style, link, component));
+            _spans.Add(new InlineSpan(start, text.Length, style, link, component, textStyle));
         }
 
-        public InlineContent Build() => new(_text.ToString(), [.. _spans], [.. _links], [.. _objects]) { Components = [.. _components] };
+        public InlineContent Build() => new(_text.ToString(), [.. _spans], [.. _links], [.. _objects]) { Components = [.. _components], TextStyles = [.. _textStyles] };
 
         // ---- InlineMapContext（插件） ----
 

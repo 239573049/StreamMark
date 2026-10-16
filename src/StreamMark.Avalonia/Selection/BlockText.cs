@@ -71,6 +71,12 @@ public static class BlockText
                     Collect(child, list, "");
                 }
                 break;
+            case HtmlBoxBlock box:
+                foreach (var child in box.Children)
+                {
+                    Collect(child, list, prefix);
+                }
+                break;
             case QuoteBlock quote:
                 foreach (var child in quote.Children)
                 {

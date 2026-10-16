@@ -164,6 +164,21 @@ public sealed record HtmlBlock(string Html) : MarkdownBlock
     internal override void AddContent(ref Fingerprint fp) => fp.Add(Html);
 }
 
+/// <summary>
+/// 由原始 HTML 转换来的盒子（div、p、center、section 等，或一段 HTML 中的多个顶层元素）：
+/// 盒子样式（外边距、内边距、背景、边框、宽度）作用于自身，文字样式由其中所有块继承。
+/// </summary>
+public sealed record HtmlBoxBlock(string Tag, HtmlBoxStyle Box, HtmlTextStyle Text, ImmutableArray<MarkdownBlock> Children) : MarkdownBlock
+{
+    internal override void AddContent(ref Fingerprint fp)
+    {
+        fp.Add(Tag);
+        fp.Add(Box.ToString());
+        fp.Add(Text.ToString());
+        AddChildren(ref fp, Children);
+    }
+}
+
 public sealed record FootnoteDefinition(string Label, int Order, ImmutableArray<MarkdownBlock> Children);
 
 /// <summary>文末脚注组。</summary>

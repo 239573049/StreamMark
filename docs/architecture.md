@@ -105,3 +105,17 @@ MarkdownServices { Plugins = [...] } → Registry（不可变）→ Profile（�
 - **内置组件**（`BuiltInComponentsPlugin`，总是启用，可被同名注册覆盖）：`<details>/<summary>`、`<think>` 折叠块，`<Citation id/>` 引用标签，`<cite href>` 引用文字。
 - **块状态**：`BlockStateStore` 每个文档一份，按 (块 key, 状态名) 保存折叠、换行、图表 / 源码切换等，视图回收或重建后保留。
 - **文档方言**：宿主创建文档时应传 `services.Profile`（`MarkdownEntry.FromText(text, profile)`、`new MarkdownStream(profile: …)`），否则插件注册的标签不会被解析。
+
+## 原始 HTML（阶段 3.5）
+
+1. **解析与映射**：`MarkdigMapper.MapSiblings` 把 Markdig 的 `HtmlBlock`，连同夹在其中的 Markdown 兄弟块，交给 `HtmlTreeBuilder`；构建器容错，支持隐式闭合和分多次输入。`HtmlMapper` 再把树转换为块。
+   - 标题、列表、表格、引用、代码、分隔线、`details`、定义列表复用已有的块；
+   - 盒子元素映射为 `HtmlBoxBlock(Tag, HtmlBoxStyle, HtmlTextStyle, Children)`；
+   - 行内内容由 `HtmlInlineBuilder` 生成；空白按 HTML 规则折叠，CJK 字符之间的换行不变成空格。
+2. **CSS**：`CssStyle` 解析表现属性和 `style` 子集，结果限制在合理范围内。行内的 CSS 写入 `InlineContent.TextStyles`，由 `InlineSpan.TextStyleIndex` 引用。
+3. **Markdown 段落中的行内 HTML**（`<strong>…</strong>` 可以跨软换行）：`InlineBuilder` 维护一个标签栈，栈中的样式、链接和文字样式作用于其间所有文字。
+4. **渲染**：
+   - `HtmlBoxBlockView` 负责外边距、边框、内边距、背景、圆角和宽度；窄于可用宽度时按外层对齐方式摆放。
+   - 它通过 `RenderContext.WithHtml` 把文字样式和背景传给子块；子块上下文会缓存，避免每次更新都重新排版。
+   - `TextSegmentView.Set` 应用继承的对齐、字号、粗细和颜色；`PropertiesFor` 应用行内文字样式；`TableBlockView` 在外层居中时整体居中。
+   - 作者颜色经 `HtmlPaint` 按 `MarkdownServices.HtmlColors` 处理。

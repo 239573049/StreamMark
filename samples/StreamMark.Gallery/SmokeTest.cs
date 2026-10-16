@@ -112,6 +112,7 @@ internal static class SmokeTest
         check("ui.diagram", diagram is { IsShowingDiagram: true, Bounds.Height: > 80 }, diagram is null ? "no diagram view" : $"showing {diagram.IsShowingDiagram}, height {diagram.Bounds.Height:F0}");
         check("ui.code", window.GetVisualDescendants().OfType<CodeBlockView>().Any(), null);
         check("ui.components", window.GetVisualDescendants().OfType<StreamMark.Avalonia.Plugins.CollapsibleBlockView>().Any(), null);
+        check("ui.html", window.GetVisualDescendants().OfType<StreamMark.Avalonia.Rendering.HtmlBoxBlockView>().Count() >= 2, null);
 
         using var frame = window.CaptureRenderedFrame();
         check("ui.frame", frame is not null, null);

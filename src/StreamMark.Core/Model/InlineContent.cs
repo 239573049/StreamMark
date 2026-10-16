@@ -25,9 +25,10 @@ public enum InlineStyle : ushort
 
 /// <summary>
 /// 扁平文本中的一段样式区间。<see cref="LinkIndex"/> 指向 <see cref="InlineContent.Links"/>，
-/// <see cref="ComponentIndex"/> 指向 <see cref="InlineContent.Components"/>（成对的行内组件，如 <c>&lt;cite&gt;</c>），-1 表示没有。
+/// <see cref="ComponentIndex"/> 指向 <see cref="InlineContent.Components"/>（成对的行内组件，如 <c>&lt;cite&gt;</c>），
+/// <see cref="TextStyleIndex"/> 指向 <see cref="InlineContent.TextStyles"/>（HTML 的 color / font-size 等），-1 表示没有。
 /// </summary>
-public readonly record struct InlineSpan(int Start, int Length, InlineStyle Style, int LinkIndex = -1, int ComponentIndex = -1)
+public readonly record struct InlineSpan(int Start, int Length, InlineStyle Style, int LinkIndex = -1, int ComponentIndex = -1, int TextStyleIndex = -1)
 {
     public int End => Start + Length;
 }
@@ -109,6 +110,9 @@ public sealed record InlineContent(
     /// <summary>成对行内组件表，由 <see cref="InlineSpan.ComponentIndex"/> 引用。</summary>
     public ImmutableArray<InlineComponent> Components { get; init; } = [];
 
+    /// <summary>HTML 行内文字样式表，由 <see cref="InlineSpan.TextStyleIndex"/> 引用。</summary>
+    public ImmutableArray<HtmlTextStyle> TextStyles { get; init; } = [];
+
     public bool IsEmpty => Text.Length == 0;
 
     internal void AddTo(ref Fingerprint fp)
@@ -122,6 +126,12 @@ public sealed record InlineContent(
             fp.Add((int)span.Style);
             fp.Add(span.LinkIndex);
             fp.Add(span.ComponentIndex);
+            fp.Add(span.TextStyleIndex);
+        }
+        fp.Add(TextStyles.Length);
+        foreach (var textStyle in TextStyles)
+        {
+            fp.Add(textStyle.ToString());
         }
         fp.Add(Components.Length);
         foreach (var component in Components)

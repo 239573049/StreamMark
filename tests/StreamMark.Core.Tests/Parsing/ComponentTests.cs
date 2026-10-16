@@ -93,7 +93,7 @@ public sealed class ComponentTests
     [Fact]
     public void NonWhitelistedTags_KeepDefaultBehaviour()
     {
-        var blocks = Parse("<div>\nraw\n</div>");
+        var blocks = Parse("<foo>\nraw\n</foo>");
         Assert.IsType<HtmlBlock>(Assert.Single(blocks));
     }
 

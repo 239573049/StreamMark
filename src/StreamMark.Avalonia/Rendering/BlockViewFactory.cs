@@ -32,6 +32,7 @@ public static class BlockViewFactory
         ViewType.Footnotes => new FootnotesBlockView(),
         ViewType.Definitions => new DefinitionListBlockView(),
         ViewType.Container => new ContainerBlockView(),
+        ViewType.HtmlBox => new HtmlBoxBlockView(),
         _ => new ThematicBreakBlockView(),
     };
 
@@ -65,6 +66,7 @@ public static class BlockViewFactory
         FootnotesBlockView => block is FootnotesBlock,
         DefinitionListBlockView => block is DefinitionListBlock,
         ContainerBlockView => block is CustomContainerBlock,
+        HtmlBoxBlockView => block is HtmlBoxBlock,
         ThematicBreakBlockView => block is ThematicBreakBlock,
         _ => false,
     };
@@ -82,6 +84,7 @@ public static class BlockViewFactory
         Footnotes,
         Definitions,
         Container,
+        HtmlBox,
         Break,
     }
 
@@ -99,6 +102,7 @@ public static class BlockViewFactory
         FootnotesBlock => ViewType.Footnotes,
         DefinitionListBlock => ViewType.Definitions,
         CustomContainerBlock => ViewType.Container,
+        HtmlBoxBlock => ViewType.HtmlBox,
         _ => ViewType.Break,
     };
 }

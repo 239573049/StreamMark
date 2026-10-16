@@ -1,6 +1,7 @@
 using StreamMark.Avalonia.Extensions;
 using StreamMark.Avalonia.Plugins;
 using StreamMark.Avalonia.Selection;
+using StreamMark.Core.Model;
 
 namespace StreamMark.Avalonia.Rendering;
 
@@ -42,6 +43,24 @@ public sealed class RenderContext
     /// <summary>流式状态（渐显、光标），静态文档为 null。</summary>
     public StreamingState? Streaming { get; }
 
+    /// <summary>外层 HTML 盒子继承下来的文字样式（颜色、字号、粗细、对齐），没有时为 null。</summary>
+    public HtmlTextStyle? Inherited { get; private init; }
+
+    /// <summary>外层 HTML 盒子的背景色（用于判断作者颜色是否可读），没有时为 null。</summary>
+    public CssColor? HtmlBackground { get; private init; }
+
     public RenderContext With(MarkdownStyle? style = null, MarkdownServices? services = null, int? entry = null) =>
-        new(style ?? Style, services ?? Services, Selection, entry ?? Entry, Streaming, State, ImageBaseUri);
+        new(style ?? Style, services ?? Services, Selection, entry ?? Entry, Streaming, State, ImageBaseUri)
+        {
+            Inherited = Inherited,
+            HtmlBackground = HtmlBackground,
+        };
+
+    /// <summary>进入一个 HTML 盒子：叠加其文字样式与背景。</summary>
+    public RenderContext WithHtml(HtmlTextStyle text, CssColor? background) =>
+        new(Style, Services, Selection, Entry, Streaming, State, ImageBaseUri)
+        {
+            Inherited = text.Over(Inherited ?? HtmlTextStyle.Default),
+            HtmlBackground = background is { A: > 0 } ? background : HtmlBackground,
+        };
 }

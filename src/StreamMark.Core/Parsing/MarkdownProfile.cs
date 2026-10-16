@@ -47,6 +47,14 @@ public sealed class MarkdownProfile
 
     /// <summary>块级组件名（小写），切分器据此不在容器内部冻结。</summary>
     internal ImmutableArray<string> BlockComponentNames => Table.BlockNames;
+
+    /// <summary>流式切分时按"容器"处理（未闭合就不冻结）的标签：块级组件与可包住 Markdown 的 HTML 容器元素。</summary>
+    internal ImmutableArray<string> SegmenterContainers =>
+        _segmenterContainers.IsDefault
+            ? _segmenterContainers = [.. BlockComponentNames.Concat(Html.HtmlElements.Containers).Distinct(StringComparer.OrdinalIgnoreCase)]
+            : _segmenterContainers;
+
+    private ImmutableArray<string> _segmenterContainers;
 }
 
 /// <summary>构建 <see cref="MarkdownProfile"/>。插件在这里注册语法扩展、组件与映射。</summary>

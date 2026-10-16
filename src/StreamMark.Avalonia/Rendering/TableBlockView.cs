@@ -26,6 +26,8 @@ public sealed class TableBlockView : BlockView
     private double[] _columnWidths = [];
     private double[] _rowHeights = [];
     private double _offsetX;
+    // 外层 HTML 居中 / 右对齐且表格窄于可用宽度时整体右移
+    private double _shift;
     private double _contentWidth;
 
     public TableBlockView()
@@ -134,10 +136,17 @@ public sealed class TableBlockView : BlockView
 
     protected override Size ArrangeOverride(Size finalSize)
     {
+        var spare = Math.Max(0, finalSize.Width - _contentWidth - 1);
+        _shift = Context?.Inherited?.Align switch
+        {
+            TextAlign.Center => Math.Floor(spare / 2),
+            TextAlign.Right => spare,
+            _ => 0,
+        };
         double y = 0;
         for (var r = 0; r < _cells.Count; r++)
         {
-            var x = -_offsetX;
+            var x = _shift - _offsetX;
             for (var c = 0; c < _cells[r].Count; c++)
             {
                 _cells[r][c].Arrange(new Rect(x + CellPaddingX, y + CellPaddingY, Math.Max(1, _columnWidths[c] - CellPaddingX * 2), _rowHeights[r] - CellPaddingY * 2));
@@ -145,7 +154,7 @@ public sealed class TableBlockView : BlockView
             }
             y += _rowHeights[r];
         }
-        var visibleRight = Math.Min(finalSize.Width, _contentWidth + 1);
+        var visibleRight = Math.Min(finalSize.Width, _shift + _contentWidth + 1);
         _copy.Arrange(new Rect(visibleRight - _copy.DesiredSize.Width - 3, 3, _copy.DesiredSize.Width, _copy.DesiredSize.Height));
         return finalSize;
     }
@@ -160,7 +169,7 @@ public sealed class TableBlockView : BlockView
         var pen = new Pen(style.TableBorderBrush, 1);
         var width = _contentWidth;
         var height = _rowHeights.Sum();
-        using (context.PushTransform(Matrix.CreateTranslation(-_offsetX, 0)))
+        using (context.PushTransform(Matrix.CreateTranslation(_shift - _offsetX, 0)))
         {
             if (Block is TableBlock { Rows.Length: > 0 } table && table.Rows[0].IsHeader)
             {

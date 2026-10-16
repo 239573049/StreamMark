@@ -80,6 +80,19 @@ flowchart LR
 - `代码`
 </details>
 
+## HTML
+
+<div align="center">
+  <h3>居中的 HTML 标题</h3>
+  <p>支持 <strong>常用标签</strong>、<span style="color: #1677ff">颜色</span>、<span style="font-size: 18px">字号</span> 与 <a href="https://github.com/239573049/StreamMark">链接</a>。</p>
+</div>
+
+<div style="margin-top: 8px; padding: 10px 14px; border: 1px solid #8884; border-radius: 8px">
+
+盒子里也可以写 **Markdown**（与 HTML 之间用空行隔开）。
+
+</div>
+
 脚注示例[^1]。
 
 [^1]: 脚注内容会显示在文末。

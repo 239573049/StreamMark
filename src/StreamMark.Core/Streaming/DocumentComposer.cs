@@ -44,7 +44,7 @@ internal sealed class DocumentComposer
         _profile = profile ?? MarkdownProfile.Default;
         var options = tailOptions ?? RemendOptions.Default;
         _tailOptions = _profile.RemendHandlers.IsEmpty ? options : options with { Handlers = [.. options.Handlers ?? [], .. _profile.RemendHandlers] };
-        _segmenter = new StreamSegmenter(_profile.BlockComponentNames);
+        _segmenter = new StreamSegmenter(_profile.SegmenterContainers);
     }
 
     public int FrozenEnd => _segmenter.FrozenEnd;
@@ -52,7 +52,7 @@ internal sealed class DocumentComposer
     public void Reset()
     {
         _frozen = new AppendOnlyList<MarkdownBlock>();
-        _segmenter = new StreamSegmenter(_profile.BlockComponentNames);
+        _segmenter = new StreamSegmenter(_profile.SegmenterContainers);
         _generation++;
     }
 

@@ -34,6 +34,9 @@ public sealed class MarkdownServices
     /// 图片管线（加载策略、内存 / 磁盘缓存）。默认是进程共享的仅内存缓存实例；
     /// 宿主通常自建一个带磁盘缓存目录的实例（并负责释放）。
     /// </summary>
+    /// <summary>HTML 中作者指定的颜色如何处理（默认：按作者颜色，但与背景对比度不足时改用主题颜色）。</summary>
+    public HtmlColorMode HtmlColors { get; init; } = HtmlColorMode.Readable;
+
     public ImagePipeline Images { get; init; } = s_defaultImages ??= new ImagePipeline();
 
     /// <summary>
@@ -85,4 +88,17 @@ public sealed class MarkdownServices
     public static MarkdownServices GetServices(AvaloniaObject target) => target.GetValue(ServicesProperty);
 
     public static void SetServices(AvaloniaObject target, MarkdownServices value) => target.SetValue(ServicesProperty, value);
+}
+
+/// <summary>HTML 颜色（<c>color</c>、<c>background</c>、<c>&lt;font color&gt;</c>）的处理方式。</summary>
+public enum HtmlColorMode
+{
+    /// <summary>使用作者颜色；文字颜色与所在背景对比度不足时（例如暗色主题中的 #333）改用主题文字色。</summary>
+    Readable,
+
+    /// <summary>完全按作者颜色。</summary>
+    Exact,
+
+    /// <summary>忽略所有作者颜色，只用主题颜色。</summary>
+    Ignore,
 }

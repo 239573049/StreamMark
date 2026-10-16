@@ -538,6 +538,7 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
             TableBlock t => t.Rows.Length * (style.LineHeight + 12),
             ListBlock l => l.Items.Sum(i => i.Children.Sum(child => Estimate(child, context))) + l.Items.Length * 4,
             QuoteBlock q => q.Children.Sum(child => Estimate(child, context)) + q.Children.Length * style.BlockSpacing,
+            HtmlBoxBlock b => b.Children.Sum(child => Estimate(child, context)) + b.Children.Length * style.BlockSpacing + b.Box.Margin.Top + b.Box.Margin.Bottom + b.Box.Padding.Top + b.Box.Padding.Bottom,
             AlertBlock a => a.Children.Sum(child => Estimate(child, context)) + style.LineHeight + 8,
             ThematicBreakBlock => 17,
             _ => style.LineHeight * 2,

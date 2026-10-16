@@ -52,6 +52,18 @@ var view = new MarkdownView { Markdown = "# Hello" };
 Built in: `<details>/<summary>`, `<think>`, `<kbd>`, `<sub>`, `<sup>`, `<mark>`, `<u>`, `<cite href>`, `<Citation id="1"/>`, `<img src width height>`.
 Plugins add their own: `builder.AddBlockComponent("callout", _ => new CalloutView())`, `builder.AddInlineComponent("badge", renderer)`.
 
+## Raw HTML
+
+Raw HTML in Markdown (README style) is converted into the block model, so it supports selection, copying, theming and streaming. The parser is a tolerant one written for this library.
+
+- **Block elements**: `div p center section article header footer main aside figure h1–h6 table thead tbody tfoot tr th td ul ol li dl dt dd blockquote pre hr details summary`.
+- **Inline elements**: `a img picture br strong b em i u ins s del strike code kbd samp tt var sub sup mark small big span font abbr cite dfn q time`.
+- **Attributes**: `align`, `width`, `height`, `bgcolor`, and `<font color size>`.
+- **`style` subset**: `text-align`, `color`, `background(-color)`, `font-size`, `font-weight`, `font-style`, `margin*`, `padding*`, `border`, `border-radius`, `width`, `max-width`, `display:none`. Values are clamped so content cannot break the layout.
+- **HTML around Markdown**: HTML separated from Markdown by blank lines is merged into one box, for example `<div align="center">`, a blank line, Markdown, a blank line, `</div>`.
+- **Unsupported elements**: HTML containing an unknown element (including `script`, `style`, `iframe`) is shown as source and never executed. Comments are hidden.
+- **Author colours**: `MarkdownServices.HtmlColors` controls them. The default is `Readable`: author colours are used, but the theme colour replaces any colour without enough contrast against its background. `Exact` and `Ignore` are also available.
+
 ## Core usage
 
 ```csharp
