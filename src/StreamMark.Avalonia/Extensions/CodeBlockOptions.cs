@@ -25,10 +25,10 @@ public sealed record CodeBlockOptions
 
     /// <summary>diff 头部切换按钮的提示：参数为要切换到的显示方式（每次显示时调用）。</summary>
     public Func<Rendering.DiffViewMode, string> DiffModeText { get; init; } =
-        mode => mode == Rendering.DiffViewMode.Split ? "Split view" : "Unified view";
+        mode => mode == Rendering.DiffViewMode.Split ? "Split view" : "Inline view";
 
     /// <summary><c>```diff</c> / <c>```patch</c> 的默认显示方式（用户在头部切换后按块保存）。</summary>
-    public Rendering.DiffViewMode DiffMode { get; init; } = Rendering.DiffViewMode.Unified;
+    public Rendering.DiffViewMode DiffMode { get; init; } = Rendering.DiffViewMode.Markdown;
 
     /// <summary>并排视图所需的最小宽度，更窄时以统一视图显示。</summary>
     public double DiffSplitMinWidth { get; init; } = 600;

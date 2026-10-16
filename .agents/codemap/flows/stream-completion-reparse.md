@@ -8,7 +8,7 @@ updated: 2026-10-16
 
 **Trigger:** 宿主调用 `StreamingDocument.Complete()`（会话场景经 `MarkdownStream.Complete()` / 条目完成）  **Outcome:** 整篇重新解析一次，跨片段的引用定义 / 脚注 / 列表松紧被修正，产生 `IsComplete = true` 的最终快照；内容未变的块不被重建（差异比对跳过共享前缀，跨代不跳）
 
-**工作区状态（未提交）：** `src/StreamMark.Avalonia/Extensions/` 与 `src/StreamMark.Avalonia/Rendering/` 的 6 + 21 个文件与 HEAD 逐字节相同（`git diff HEAD --name-status` 为空），本流程没有未提交改动；工作区里唯一新增的源码是未跟踪的 `src/StreamMark.Core/Diff/UnifiedDiff.cs` 与 `tests/StreamMark.Core.Tests/Diff/UnifiedDiffTests.cs`（代码块 diff 展示特性，不参与本流程）。
+**工作区状态：** `src/StreamMark.Avalonia/Extensions` 与 `src/StreamMark.Avalonia/Rendering` 的在飞改动**在本次运行中途被提交为 `cd7a2a8`**（"Diff view: unified and split modes"；`git show --stat cd7a2a8`）；此后 `git status --short` 只剩 submodule `native/ratex` 的 modified content，这两个目录相对 HEAD 是干净的。该提交只新增 `diff` / `patch` 围栏视图（`src/StreamMark.Avalonia/Rendering/DiffBlockView.cs`、`src/StreamMark.Core/Diff/UnifiedDiff.cs`）与 `CodeBlockOptions` 的 diff 选项（`DiffMode` / `DiffSplitMinWidth` / `DiffModeText`，`CollapseText` 改成 `Func<string>`），**没有改动 `Complete()` 之后的任何一步**；本页引用的所有文件与行号都已按 `cd7a2a8` 重新核对。
 
 ## Steps
 
@@ -41,8 +41,9 @@ updated: 2026-10-16
 27. `src/StreamMark.Avalonia/Rendering/TextSegmentView.cs:TextSegmentView.Set` — 段落内容变化时不要整段重排：`FirstDifference`（`:191`）算出公共前缀，然后**从差异点所在段落起点**失效 `TextRunCache.InvalidateFrom(paragraphStart)`（`:162-176`）。跨代重解析若把段落文本变了（例如 `[^1]` 变成上标引用），这里就是局部重排而非整体重建 (`avalonia-text-rendering`)
 28. `src/StreamMark.Avalonia/Rendering/TextSegmentView.cs:TextSegmentView.Render` — **光标消失**：末尾光标只在 `streaming.IsActive == true` 时画（`:472`），而 `MarkdownStream.Finish` 已把 `StreamingState.IsActive` 置 false（`src/StreamMark.Avalonia/Rendering/StreamingState.cs:21`、`src/StreamMark.Avalonia/MarkdownStream.cs:118`）；渐显靠 `StreamingState.GetFadingTail` 的时间窗自然结束 (`avalonia-text-rendering`)
 29. `src/StreamMark.Avalonia/Rendering/CodeBlockView.cs:CodeBlockView.OnUpdate` — 未闭合代码块（流式手工构造的 `CodeBlock { IsOpen: true }`）在整篇重解析后变成闭合块：`code.IsOpen` 时写入 `ExpandedState = true`（`:199-203`）避免刚写完的代码突然折叠，而 `IsCollapsible` 要求 `!code.IsOpen`（`:130-131`），所以**可折叠 / 可换成图表视图只在完成后才成立**（`BlockViewFactory.ViewTypeFor` 的 `CodeBlock { IsOpen: false }` → `Diagram`，`src/StreamMark.Avalonia/Rendering/BlockViewFactory.cs:95`） (`avalonia-text-rendering`)
-30. `src/StreamMark.Avalonia/Transcript/TranscriptEntry.cs:MarkdownEntry.EnsureParsed` — 另一条**同步**完成路径：延迟解析的历史条目在界面线程调 `Document.LoadNow(text)`（`:48-54`），而 `LoadNow` 在调用线程上直接 `Process()` 并 `SnapshotReady?.Invoke`（`src/StreamMark.Core/Streaming/StreamingDocument.cs:126-160`）——同一段 `DocumentComposer.Finish` 代码，但重解析发生在界面线程上 (`avalonia-transcript`、`core-streaming`)
-31. `src/StreamMark.Core/Streaming/StreamingDocument.cs:StreamingDocument.Append` — **Complete 之后的 Append 抛异常**（`:73-76`：`InvalidOperationException`，提示 `call Reset() before appending`）；恢复路径只有 `Reset(text?)`（`:99-113`，`_sourceGeneration++` → `Process` 里 `_composer.Reset()` 开新代）与 `Load`（`:116-120`，= `Reset + Complete`）。`MarkdownStream.Push` 则是**静默丢弃**（`src/StreamMark.Avalonia/MarkdownStream.cs:44-47`），不抛异常 (`core-streaming`)
+30. `src/StreamMark.Avalonia/Plugins/PluginRegistry.cs:PluginRegistry.FindFenceView` — 与之无关的另一类"完成后换视图"：注册了 `whileStreaming: true` 的围栏视图（如 `diff` / `patch` → `DiffBlockView`，`src/StreamMark.Avalonia/Plugins/BuiltInComponentsPlugin.cs:31`）在 `IsOpen` 时也命中（`:62-65`），所以 `IsOpen` 只区分内置的 code / diagram 分支，不阻挡插件围栏视图 (`avalonia-plugin-system`)
+31. `src/StreamMark.Avalonia/Transcript/TranscriptEntry.cs:MarkdownEntry.EnsureParsed` — 另一条**同步**完成路径：延迟解析的历史条目在界面线程调 `Document.LoadNow(text)`（`:48-54`），而 `LoadNow` 在调用线程上直接 `Process()` 并 `SnapshotReady?.Invoke`（`src/StreamMark.Core/Streaming/StreamingDocument.cs:126-160`）——同一段 `DocumentComposer.Finish` 代码，但重解析发生在界面线程上 (`avalonia-transcript`、`core-streaming`)
+32. `src/StreamMark.Core/Streaming/StreamingDocument.cs:StreamingDocument.Append` — **Complete 之后的 Append 抛异常**（`:73-76`：`InvalidOperationException`，提示 `call Reset() before appending`）；恢复路径只有 `Reset(text?)`（`:99-113`，`_sourceGeneration++` → `Process` 里 `_composer.Reset()` 开新代）与 `Load`（`:116-120`，= `Reset + Complete`）。`MarkdownStream.Push` 则是**静默丢弃**（`src/StreamMark.Avalonia/MarkdownStream.cs:44-47`），不抛异常 (`core-streaming`)
 
 ## Sequence
 
@@ -97,4 +98,4 @@ sequenceDiagram
 - Modules: [avalonia-transcript](../modules/avalonia-transcript.md)
 - 与本流程相邻的还有 [streaming-token-to-view](./streaming-token-to-view.md)（同一批视图，但走 `Update` 的流式路径）与 [transcript-virtualization-scroll](./transcript-virtualization-scroll.md)（行摊平 / 锚定）。
 - 背景记录：`docs/decisions.md:10`（为什么只在结束时整篇重解析）、`docs/streaming-rules.md:20`（出现定义后停止冻结）、`docs/streaming-rules.md:45`（冻结片段与整篇只用转义修正）。
-- 备注：`streaming-token-to-view.md` / `transcript-virtualization-scroll.md` 在本快照中**还不存在**（`.agents/codemap/` 下只有 `modules/`），上面两处按模块页的既有约定引用 (unverified)。
+- 备注：`streaming-token-to-view.md` 已存在于本目录（与 `cd7a2a8` 同批提交）；`transcript-virtualization-scroll.md` 尚未出现 (unverified)。

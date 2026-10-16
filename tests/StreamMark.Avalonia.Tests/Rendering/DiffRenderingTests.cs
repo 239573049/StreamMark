@@ -56,27 +56,44 @@ public sealed class DiffRenderingTests
     }
 
     [Fact]
-    public async Task Unified_And_Split_Render()
+    public async Task Default_IsGitHubMarkdownStyle_TogglesToSplit()
     {
         await HeadlessApp.Run(async () =>
         {
             var services = new MarkdownServices { Plugins = [new TextMatePlugin()] };
             var (window, view, diff) = await Render(services, 980);
-            Assert.Equal(DiffViewMode.Unified, diff.EffectiveMode);
+            Assert.Equal(DiffViewMode.Markdown, diff.EffectiveMode);
             Assert.Equal(2, diff.Document.Files.Length);
-            var unifiedHeight = diff.Bounds.Height;
-            HeadlessApp.Save(window, "diff-unified");
+            var markdownHeight = diff.Bounds.Height;
+            HeadlessApp.Save(window, "diff-markdown");
 
             diff.Mode = DiffViewMode.Split;
             await HeadlessApp.Settle();
             Assert.Equal(DiffViewMode.Split, diff.EffectiveMode);
-            // 并排：删除与新增配对，行数更少
-            Assert.True(diff.Bounds.Height < unifiedHeight);
+            // 并排：删除与新增配对、文件头折叠为标题栏，行数更少
+            Assert.True(diff.Bounds.Height < markdownHeight);
             HeadlessApp.Save(window, "diff-split");
 
             // 复制：整块是原始 diff
             view.SelectionController.SelectAll();
             Assert.Equal(Diff, view.SelectionController.GetSelectedText());
+            window.Close();
+        });
+    }
+
+    [Fact]
+    public async Task UnifiedMode_WithLineNumbers_ByOption()
+    {
+        await HeadlessApp.Run(async () =>
+        {
+            var services = new MarkdownServices { Plugins = [new TextMatePlugin()], CodeBlocks = CodeBlockOptions.Default with { DiffMode = DiffViewMode.Unified } };
+            var (window, _, diff) = await Render(services, 980);
+            Assert.Equal(DiffViewMode.Unified, diff.EffectiveMode);
+            HeadlessApp.Save(window, "diff-unified");
+            // 并排后切回：回到宿主默认的统一视图
+            diff.Mode = DiffViewMode.Split;
+            await HeadlessApp.Settle();
+            Assert.Equal(DiffViewMode.Split, diff.EffectiveMode);
             window.Close();
         });
     }
@@ -89,7 +106,7 @@ public sealed class DiffRenderingTests
             var services = new MarkdownServices { CodeBlocks = CodeBlockOptions.Default with { DiffMode = DiffViewMode.Split } };
             var (window, _, diff) = await Render(services, 520);
             Assert.Equal(DiffViewMode.Split, diff.Mode);
-            Assert.Equal(DiffViewMode.Unified, diff.EffectiveMode);
+            Assert.Equal(DiffViewMode.Markdown, diff.EffectiveMode);
             window.Width = 1000;
             await HeadlessApp.Settle();
             Assert.Equal(DiffViewMode.Split, diff.EffectiveMode);

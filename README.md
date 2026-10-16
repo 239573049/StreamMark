@@ -79,13 +79,11 @@ Raw HTML in Markdown (README style) is converted into the block model, so it sup
   - Collapsing: `CollapseAfterLines` (default 40) and `CollapsedLines` (default 20). Blocks that were streamed are never collapsed.
   - `ExpandText` and `CollapseText` set the labels.
   - Download: `ShowDownload` toggles the button. `Save` overrides the default save dialog. The suggested file name comes from the fence path or the language.
-- **Diff**: ```` ```diff ```` and ```` ```patch ```` blocks are parsed as unified diffs (git diff, diff -u, or bare `+`/`-` snippets) and rendered in two views:
-  - **Unified**: old and new line numbers in two columns, with deleted and added lines stacked.
-  - **Split**: old on the left and new on the right, with deleted and added lines paired.
-  - Both views show per-file headers with `+N −M` stats, hunk headers, intra-line change highlights, and syntax colours chosen by file extension.
-  - The header button switches views, and the choice is kept per block. Set the default with `CodeBlocks.DiffMode`.
-  - Split falls back to unified when the width is below `DiffSplitMinWidth` (600 by default).
-  - Diffs render while streaming. Copying gives the original diff text.
+- **Diff**: ```` ```diff ```` and ```` ```patch ```` blocks support three views:
+  - **Markdown** (default): looks like GitHub's ```` ```diff ````. The text is shown as is: `+` lines get a green background, `-` lines red, `@@` lines light blue, and file headers are grey. There are no line numbers or file bars. Syntax colours and intra-line change highlights are kept.
+  - **Split**: the header button toggles it. Old is on the left and new on the right, with line numbers, per-file headers with `+N −M` stats, and paired changes. The choice is kept per block. Split falls back to the default view when the width is below `DiffSplitMinWidth` (600).
+  - **Unified**: line numbers in two columns, chosen with `CodeBlocks.DiffMode = DiffViewMode.Unified`.
+  - Diffs render while streaming. Copying gives the original diff text. The tooltip label comes from `CodeBlocks.DiffModeText`.
 
 ## Core usage
 

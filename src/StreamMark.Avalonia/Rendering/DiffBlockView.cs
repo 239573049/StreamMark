@@ -18,6 +18,12 @@ namespace StreamMark.Avalonia.Rendering;
 /// <summary>diff 的显示方式。</summary>
 public enum DiffViewMode
 {
+    /// <summary>
+    /// 与 GitHub Markdown 中的 <c>```diff</c> 一致（默认）：原样逐行显示，+ 行绿底、- 行红底、<c>@@</c> 行淡蓝底，
+    /// 文件头等元数据行为灰色；没有行号、文件标题栏与统计。
+    /// </summary>
+    Markdown,
+
     /// <summary>统一视图：旧 / 新两列行号，删除与新增行上下排列。</summary>
     Unified,
 
@@ -49,7 +55,7 @@ public sealed class DiffBlockView : BlockView
         AddChild(_body);
         AddChild(_mode);
         AddChild(_copy);
-        _mode.Click += (_, _) => Mode = Mode == DiffViewMode.Unified ? DiffViewMode.Split : DiffViewMode.Unified;
+        _mode.Click += (_, _) => Mode = Mode == DiffViewMode.Split ? StackedMode : DiffViewMode.Split;
         _copy.Click += async (_, _) => await CopyAsync();
     }
 
@@ -65,10 +71,20 @@ public sealed class DiffBlockView : BlockView
             }
             _body.Mode = value;
             Context?.State.Set(TopKey, ModeState, value);
+            if (Context is not null && Block is not null)
+            {
+                // 标题随方式变化
+                var segment = _body.Key.Segment;
+                Update(Context, Block, TopKey, ref segment);
+            }
             UpdateModeButton();
             InvalidateMeasure();
         }
     }
+
+    // 从并排视图切回时使用的非并排方式：宿主默认值（默认值本身是并排时用 Markdown 方式）
+    private DiffViewMode StackedMode =>
+        Context?.Services.CodeBlocks.DiffMode is { } mode && mode != DiffViewMode.Split ? mode : DiffViewMode.Markdown;
 
     /// <summary>实际使用的显示方式。</summary>
     public DiffViewMode EffectiveMode => _body.EffectiveMode;
@@ -80,10 +96,12 @@ public sealed class DiffBlockView : BlockView
     private void UpdateModeButton()
     {
         // 图标表示"切换到"的方式
-        _mode.Icon = _body.Mode == DiffViewMode.Unified ? DiffIcons.Split : DiffIcons.Unified;
+        var target = _body.Mode == DiffViewMode.Split ? StackedMode : DiffViewMode.Split;
+        _mode.Icon = target == DiffViewMode.Split ? DiffIcons.Split : DiffIcons.Unified;
+        _mode.IsActive = _body.Mode == DiffViewMode.Split;
         if (Context is not null)
         {
-            ToolTip.SetTip(_mode, Context.Services.CodeBlocks.DiffModeText(_body.Mode == DiffViewMode.Unified ? DiffViewMode.Split : DiffViewMode.Unified));
+            ToolTip.SetTip(_mode, Context.Services.CodeBlocks.DiffModeText(target));
         }
         _mode.InvalidateVisual();
     }
@@ -105,7 +123,9 @@ public sealed class DiffBlockView : BlockView
             button.HoverBackground = style.HoverBackground;
         }
         var files = _document.Files.Length;
-        var title = files switch
+        // Markdown 方式与普通代码块一样只显示语言；其它方式显示文件与增删统计
+        var plain = _body.Mode == DiffViewMode.Markdown;
+        var title = plain ? code.Language ?? "diff" : files switch
         {
             0 => "diff",
             1 when _document.Files[0].DisplayPath is { } path => "diff · " + path,
@@ -113,7 +133,7 @@ public sealed class DiffBlockView : BlockView
         };
         _title = new TextLayout(title, new Typeface(style.MonospaceFontFamily), style.CodeFontSize * 0.92, style.SecondaryForeground,
             textTrimming: TextTrimming.CharacterEllipsis, maxWidth: 420);
-        _stats = DiffBodyView.StatsLayout(style, _document.Additions, _document.Deletions);
+        _stats = plain ? null : DiffBodyView.StatsLayout(style, _document.Additions, _document.Deletions);
         _body.Set(context, KeyFor(context, topKey, ref segment), code.Code, _document, topKey);
         InvalidateMeasure();
         InvalidateVisual();
@@ -203,11 +223,26 @@ public sealed class DiffBodyView : Control, ISelectableSegment
         Line,
     }
 
-    /// <summary>一个显示单元格：对应原始 diff 中一行的一段（<see cref="RawStart"/> 起 <see cref="Text"/> 长）。</summary>
+    /// <summary>Markdown 方式中一行的色调。</summary>
+    private enum Tone : byte
+    {
+        Normal,
+        Added,
+        Deleted,
+        Hunk,
+        Meta,
+    }
+
+    /// <summary>一个显示单元格：对应原始 diff 中一行的一段（<c>RawStart</c> 起 <c>Text</c> 长）。</summary>
     private sealed class Cell
     {
         public required DiffLine Line;
         public required int RawStart;
+        /// <summary>显示的文字（Markdown 方式为整行原文，含 +/- 标记）。</summary>
+        public required string Text;
+        /// <summary>显示文字相对 <see cref="DiffLine.Text"/> 的偏移（着色与行内改动区间需要右移的列数）。</summary>
+        public int Shift;
+        public Tone Tone;
         public (int Start, int Length)? Changed;
         public double X;
         public double Width;
@@ -238,7 +273,7 @@ public sealed class DiffBodyView : Control, ISelectableSegment
     internal static readonly IBrush DeletedText = new ImmutableSolidColorBrush(Color.FromRgb(0xF8, 0x51, 0x49));
 
     private readonly List<Row> _rows = [];
-    private readonly Dictionary<(int Raw, double Width), (string Text, ImmutableArray<HighlightToken> Tokens, (int, int)? Changed, TextLayout Layout)> _layouts = [];
+    private readonly Dictionary<(int Raw, double Width, int Shift), (string Text, ImmutableArray<HighlightToken> Tokens, (int, int)? Changed, TextLayout Layout)> _layouts = [];
     private RenderContext? _context;
     private DiffDocument _document = new([]);
     private string _text = "";
@@ -357,7 +392,20 @@ public sealed class DiffBodyView : Control, ISelectableSegment
         }
         var style = _context.Style;
         var options = _context.Services.CodeBlocks;
-        EffectiveMode = _mode == DiffViewMode.Split && width >= options.DiffSplitMinWidth ? DiffViewMode.Split : DiffViewMode.Unified;
+        EffectiveMode = _mode switch
+        {
+            DiffViewMode.Split when width >= options.DiffSplitMinWidth => DiffViewMode.Split,
+            DiffViewMode.Markdown => DiffViewMode.Markdown,
+            // 并排视图放不下时退回宿主默认的非并排方式
+            DiffViewMode.Split => options.DiffMode == DiffViewMode.Unified ? DiffViewMode.Unified : DiffViewMode.Markdown,
+            _ => DiffViewMode.Unified,
+        };
+        if (EffectiveMode == DiffViewMode.Markdown)
+        {
+            BuildMarkdownRows();
+            _rowsDirty = false;
+            return;
+        }
         var maxNumber = 1;
         foreach (var file in _document.Files)
         {
@@ -410,9 +458,79 @@ public sealed class DiffBodyView : Control, ISelectableSegment
         _rowsDirty = false;
     }
 
+    // Markdown 方式：原始 diff 逐行显示（与 GitHub 的 ```diff 代码块相同），解析结果只用于着色与行内改动
+    private void BuildMarkdownRows()
+    {
+        var lines = new Dictionary<int, DiffLine>();
+        var hunks = new HashSet<int>();
+        var changed = new Dictionary<int, (int, int)>();
+        foreach (var file in _document.Files)
+        {
+            foreach (var hunk in file.Hunks)
+            {
+                if (hunk.Header.Length > 0)
+                {
+                    hunks.Add(hunk.RawLine);
+                }
+                foreach (var line in hunk.Lines)
+                {
+                    lines[line.RawLine] = line;
+                }
+                foreach (var pair in ChangedRanges(hunk))
+                {
+                    changed[pair.Key] = pair.Value;
+                }
+            }
+        }
+        var count = _lineStarts.Length;
+        // 以换行结尾时最后一个"行"是空的
+        if (count > 1 && _lineStarts[^1] == _text.Length)
+        {
+            count--;
+        }
+        for (var raw = 0; raw < count; raw++)
+        {
+            var start = _lineStarts[raw];
+            var end = raw + 1 < _lineStarts.Length ? _lineStarts[raw + 1] - 1 : _text.Length;
+            var text = _text[start..Math.Max(start, end)].TrimEnd('\r');
+            DiffLine line;
+            Tone tone;
+            if (lines.TryGetValue(raw, out var parsed))
+            {
+                line = parsed;
+                tone = parsed.Kind switch
+                {
+                    DiffLineKind.Added => Tone.Added,
+                    DiffLineKind.Deleted => Tone.Deleted,
+                    DiffLineKind.NoNewline => Tone.Meta,
+                    _ => Tone.Normal,
+                };
+            }
+            else
+            {
+                line = new DiffLine(DiffLineKind.Context, null, null, text, raw, 0);
+                tone = hunks.Contains(raw) ? Tone.Hunk : Tone.Meta;
+            }
+            _rows.Add(new Row
+            {
+                Kind = RowKind.Line,
+                Left = new Cell
+                {
+                    Line = line,
+                    Text = text,
+                    Shift = line.TextStart,
+                    Tone = tone,
+                    RawStart = start,
+                    Changed = changed.TryGetValue(raw, out var range) ? range : null,
+                },
+            });
+        }
+    }
+
     private Cell NewCell(DiffLine line, Dictionary<int, (int, int)> changed) => new()
     {
         Line = line,
+        Text = line.Text,
         RawStart = RawLineStart(line.RawLine) + line.TextStart,
         Changed = changed.TryGetValue(line.RawLine, out var range) ? range : null,
     };
@@ -442,21 +560,24 @@ public sealed class DiffBodyView : Control, ISelectableSegment
     private TextLayout CellLayout(Cell cell, double width)
     {
         var style = _context!.Style;
-        var tokens = _highlight?.TokensFor(cell.Line.RawLine) ?? default;
-        var key = (cell.Line.RawLine, Math.Round(width, 1));
-        if (_layouts.TryGetValue(key, out var cached) && cached.Text == cell.Line.Text && cached.Changed == cell.Changed && SameTokens(cached.Tokens, tokens))
+        // 元数据行（文件头、区段头）不着色
+        var tokens = cell.Tone is Tone.Meta or Tone.Hunk ? default : _highlight?.TokensFor(cell.Line.RawLine) ?? default;
+        var key = (cell.Line.RawLine, Math.Round(width, 1), cell.Shift);
+        if (_layouts.TryGetValue(key, out var cached) && cached.Text == cell.Text && cached.Changed == cell.Changed && SameTokens(cached.Tokens, tokens))
         {
             return cached.Layout;
         }
         var typeface = new Typeface(style.MonospaceFontFamily);
         List<ValueSpan<TextRunProperties>>? overrides = null;
-        var text = cell.Line.Text;
+        var text = cell.Text;
+        var shift = cell.Shift;
         if (!tokens.IsDefaultOrEmpty)
         {
             overrides = [];
             foreach (var token in tokens)
             {
-                if (token.Start >= text.Length)
+                var tokenStart = token.Start + shift;
+                if (tokenStart >= text.Length)
                 {
                     break;
                 }
@@ -468,10 +589,10 @@ public sealed class DiffBodyView : Control, ISelectableSegment
                 var face = new Typeface(style.MonospaceFontFamily,
                     token.Style.HasFlag(HighlightFontStyle.Italic) ? FontStyle.Italic : FontStyle.Normal,
                     token.Style.HasFlag(HighlightFontStyle.Bold) ? FontWeight.Bold : FontWeight.Normal);
-                overrides.Add(new ValueSpan<TextRunProperties>(token.Start, Math.Min(token.Length, text.Length - token.Start), new GenericTextRunProperties(face, style.CodeFontSize, foregroundBrush: brush)));
+                overrides.Add(new ValueSpan<TextRunProperties>(tokenStart, Math.Min(token.Length, text.Length - tokenStart), new GenericTextRunProperties(face, style.CodeFontSize, foregroundBrush: brush)));
             }
         }
-        var foreground = cell.Line.Kind == DiffLineKind.NoNewline ? style.SecondaryForeground : style.Foreground;
+        var foreground = cell.Line.Kind == DiffLineKind.NoNewline || cell.Tone is Tone.Meta or Tone.Hunk ? style.SecondaryForeground : style.Foreground;
         var layout = new TextLayout(text.Length == 0 ? " " : text, typeface, style.CodeFontSize, foreground,
             textWrapping: TextWrapping.Wrap, maxWidth: Math.Max(1, width), lineHeight: style.CodeLineHeight, textStyleOverrides: overrides);
         _layouts[key] = (text, tokens, cell.Changed, layout);
@@ -514,7 +635,14 @@ public sealed class DiffBodyView : Control, ISelectableSegment
                     break;
                 default:
                     var height = style.CodeLineHeight;
-                    if (EffectiveMode == DiffViewMode.Split)
+                    if (EffectiveMode == DiffViewMode.Markdown && row.Left is { } plainCell)
+                    {
+                        // 与普通代码块相同的左右内边距
+                        plainCell.X = 14;
+                        plainCell.Width = Math.Max(1, width - 28);
+                        height = Math.Max(height, CellLayout(plainCell, plainCell.Width).Height);
+                    }
+                    else if (EffectiveMode == DiffViewMode.Split)
                     {
                         var half = width / 2;
                         var textWidth = half - _numberWidth - MarkerWidth - TextGap - 8;
@@ -577,7 +705,22 @@ public sealed class DiffBodyView : Control, ISelectableSegment
                     row.Label!.Draw(context, new Point(14, row.Top + 2));
                     break;
                 default:
-                    if (EffectiveMode == DiffViewMode.Split)
+                    if (EffectiveMode == DiffViewMode.Markdown && row.Left is { } plainCell)
+                    {
+                        var background = plainCell.Tone switch
+                        {
+                            Tone.Added => AddedBackground,
+                            Tone.Deleted => DeletedBackground,
+                            Tone.Hunk => HunkBackground,
+                            _ => null,
+                        };
+                        if (background is not null)
+                        {
+                            context.FillRectangle(background, new Rect(0, row.Top, width, row.Height));
+                        }
+                        DrawCell(context, plainCell, row.Top, selected);
+                    }
+                    else if (EffectiveMode == DiffViewMode.Split)
                     {
                         var half = width / 2;
                         DrawSide(context, row.Left, 0, half, row, numberTypeface, numberSize, selected, left: true);
@@ -663,7 +806,7 @@ public sealed class DiffBodyView : Control, ISelectableSegment
         if (cell.Changed is { } changed && changed.Length > 0)
         {
             var brush = cell.Line.Kind == DiffLineKind.Added ? AddedChange : DeletedChange;
-            foreach (var rect in layout.HitTestTextRange(changed.Start, changed.Length))
+            foreach (var rect in layout.HitTestTextRange(changed.Start + cell.Shift, changed.Length))
             {
                 context.FillRectangle(brush, rect.Translate(origin), 2);
             }
@@ -671,7 +814,7 @@ public sealed class DiffBodyView : Control, ISelectableSegment
         if (selected is { } range)
         {
             var s = Math.Max(range.Start, cell.RawStart) - cell.RawStart;
-            var e = Math.Min(range.End, cell.RawStart + cell.Line.Text.Length) - cell.RawStart;
+            var e = Math.Min(range.End, cell.RawStart + cell.Text.Length) - cell.RawStart;
             if (e > s)
             {
                 foreach (var rect in layout.HitTestTextRange(s, e - s))
@@ -679,7 +822,7 @@ public sealed class DiffBodyView : Control, ISelectableSegment
                     context.FillRectangle(_context!.Style.SelectionBackground, rect.Translate(origin));
                 }
             }
-            else if (range.Start <= cell.RawStart && range.End > cell.RawStart + cell.Line.Text.Length && cell.Line.Text.Length == 0)
+            else if (range.Start <= cell.RawStart && range.End > cell.RawStart + cell.Text.Length && cell.Text.Length == 0)
             {
                 context.FillRectangle(_context!.Style.SelectionBackground, new Rect(origin, new Size(_context.Style.CodeFontSize * 0.5, layout.Height)));
             }
@@ -711,7 +854,7 @@ public sealed class DiffBodyView : Control, ISelectableSegment
         }
         var layout = CellLayout(cell, cell.Width);
         var hit = layout.HitTestPoint(new Point(point.X - cell.X, Math.Max(0, point.Y - row.Top)));
-        return cell.RawStart + Math.Clamp(hit.TextPosition, 0, cell.Line.Text.Length);
+        return cell.RawStart + Math.Clamp(hit.TextPosition, 0, cell.Text.Length);
     }
 
     public Rect GetCharacterBounds(int offset)
@@ -720,7 +863,7 @@ public sealed class DiffBodyView : Control, ISelectableSegment
         {
             foreach (var cell in new[] { row.Left, row.Right })
             {
-                if (cell is not null && offset >= cell.RawStart && offset <= cell.RawStart + cell.Line.Text.Length)
+                if (cell is not null && offset >= cell.RawStart && offset <= cell.RawStart + cell.Text.Length)
                 {
                     var rect = CellLayout(cell, cell.Width).HitTestTextPosition(offset - cell.RawStart);
                     return rect.Translate(new Vector(cell.X, row.Top));
