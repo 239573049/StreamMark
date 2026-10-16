@@ -21,6 +21,8 @@ public sealed class MarkdownStyle
     public required IBrush CodeBackground { get; init; }
     public required IBrush CodeBorderBrush { get; init; }
     public required IBrush InlineCodeBackground { get; init; }
+    public required IBrush InlineCodeForeground { get; init; }
+    public required IBrush ListMarkerForeground { get; init; }
     public required IBrush QuoteBorderBrush { get; init; }
     public required IBrush TableBorderBrush { get; init; }
     public required IBrush TableHeaderBackground { get; init; }
@@ -90,13 +92,16 @@ public sealed class MarkdownStyle
         }
 
         var foreground = Get<IBrush>(MarkdownResourceKeys.Foreground, isDark ? Brushes.WhiteSmoke : Brushes.Black);
+        var secondary = Get<IBrush>(MarkdownResourceKeys.SecondaryForeground, Brushes.Gray);
         // 未显式配置字体时沿用继承的 TextElement 字体（宿主设在窗口上的字体）
         var fontSize = Get<double>(MarkdownResourceKeys.FontSize, control.GetValue(TextElement.FontSizeProperty));
         var fontFamily = Get<FontFamily>(MarkdownResourceKeys.FontFamily, control.GetValue(TextElement.FontFamilyProperty));
         return new MarkdownStyle
         {
             Foreground = foreground,
-            SecondaryForeground = Get<IBrush>(MarkdownResourceKeys.SecondaryForeground, Brushes.Gray),
+            SecondaryForeground = secondary,
+            InlineCodeForeground = Get<IBrush>(MarkdownResourceKeys.InlineCodeForeground, foreground),
+            ListMarkerForeground = Get<IBrush>(MarkdownResourceKeys.ListMarkerForeground, secondary),
             LinkForeground = Get<IBrush>(MarkdownResourceKeys.LinkForeground, Brushes.DodgerBlue),
             SelectionBackground = Get<IBrush>(MarkdownResourceKeys.SelectionBackground, new SolidColorBrush(Color.FromArgb(0x59, 0x40, 0x96, 0xFF))),
             CodeBackground = Get<IBrush>(MarkdownResourceKeys.CodeBackground, isDark ? new SolidColorBrush(Color.FromRgb(0x16, 0x1B, 0x22)) : new SolidColorBrush(Color.FromRgb(0xF6, 0xF8, 0xFA))),

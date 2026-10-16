@@ -487,7 +487,8 @@ public sealed class TextSegmentView : Control, ISelectableSegment
                 baseline = BaselineAlignment.Subscript;
             }
 
-            IBrush foreground = _foreground;
+            // 行内代码 / 按键使用独立的文字色（未配置时等于正文色）；链接样式优先
+            IBrush foreground = isCode && ReferenceEquals(_foreground, s.Foreground) ? s.InlineCodeForeground : _foreground;
             TextDecorationCollection? decorations = null;
             if (style.HasFlag(InlineStyle.Link) || style.HasFlag(InlineStyle.FootnoteReference))
             {

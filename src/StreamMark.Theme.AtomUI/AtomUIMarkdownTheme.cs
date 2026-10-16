@@ -23,6 +23,8 @@ public class AtomUIMarkdownTheme : Styles
         Map(MarkdownResourceKeys.CodeBackground, SharedTokenKind.ColorFillQuaternary);
         Map(MarkdownResourceKeys.CodeBorderBrush, SharedTokenKind.ColorBorderSecondary);
         Map(MarkdownResourceKeys.InlineCodeBackground, SharedTokenKind.ColorFillTertiary);
+        Map(MarkdownResourceKeys.InlineCodeForeground, SharedTokenKind.ColorText);
+        Map(MarkdownResourceKeys.ListMarkerForeground, SharedTokenKind.ColorTextSecondary);
         Map(MarkdownResourceKeys.QuoteBorderBrush, SharedTokenKind.ColorBorder);
         Map(MarkdownResourceKeys.TableBorderBrush, SharedTokenKind.ColorBorderSecondary);
         Map(MarkdownResourceKeys.TableHeaderBackground, SharedTokenKind.ColorFillQuaternary);

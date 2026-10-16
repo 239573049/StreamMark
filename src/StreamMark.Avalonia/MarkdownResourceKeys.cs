@@ -18,6 +18,10 @@ public static class MarkdownResourceKeys
     public const string CodeBackground = "Md.CodeBackground";
     public const string CodeBorderBrush = "Md.CodeBorderBrush";
     public const string InlineCodeBackground = "Md.InlineCodeBackground";
+    /// <summary>行内代码文字色，未设置时使用 <see cref="Foreground"/>。</summary>
+    public const string InlineCodeForeground = "Md.InlineCodeForeground";
+    /// <summary>列表项目符号与序号的颜色，未设置时使用 <see cref="SecondaryForeground"/>。</summary>
+    public const string ListMarkerForeground = "Md.ListMarkerForeground";
     public const string QuoteBorderBrush = "Md.QuoteBorderBrush";
     public const string TableBorderBrush = "Md.TableBorderBrush";
     public const string TableHeaderBackground = "Md.TableHeaderBackground";

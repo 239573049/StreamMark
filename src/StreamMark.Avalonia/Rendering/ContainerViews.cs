@@ -275,7 +275,7 @@ public sealed class ListItemBlockView : StackBlockView
         }
 
         _marker ??= new TextLayout(_markerText, new Typeface(style.FontFamily), _markerText.Length == 1 ? style.FontSize * 1.1 : style.FontSize,
-            style.SecondaryForeground, TextAlignment.Right);
+            style.ListMarkerForeground, TextAlignment.Right);
         var markerBaseline = _marker.TextLines.Count > 0 ? _marker.TextLines[0].Baseline : _marker.Height;
         var x = Indent - _marker.WidthIncludingTrailingWhitespace - style.FontSize * 0.45;
         _marker.Draw(context, new Point(x, baseline - markerBaseline));
