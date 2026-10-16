@@ -22,11 +22,35 @@ public sealed class MarkdownEntry : TranscriptEntry
     }
 
     /// <summary>静态消息。<paramref name="profile"/> 应与宿主的插件匹配（<c>MarkdownServices.Profile</c>）。</summary>
-    public static MarkdownEntry FromText(string markdown, MarkdownProfile? profile = null)
+    public static MarkdownEntry FromText(string markdown, MarkdownProfile? profile = null, object? tag = null)
     {
         var document = new StreamingDocument(profile);
         document.Load(markdown);
-        return new MarkdownEntry(document);
+        return new MarkdownEntry(document) { Tag = tag };
+    }
+
+    /// <summary>
+    /// 按需解析的静态消息（例如会话历史）：创建时只保存文本，会话面板第一次需要实例化它的行
+    /// （或选区 / 复制跨过它）时才在界面线程上同步解析。解析前按字符数与换行数估算高度。
+    /// </summary>
+    public static MarkdownEntry FromTextDeferred(string markdown, MarkdownProfile? profile = null, object? tag = null) =>
+        new(new StreamingDocument(profile)) { Tag = tag, _deferred = markdown };
+
+    private string? _deferred;
+
+    /// <summary>是否已解析（非按需创建的条目始终为 true）。</summary>
+    public bool IsParsed => Volatile.Read(ref _deferred) is null;
+
+    /// <summary>尚未解析时的原文；已解析时为 null。</summary>
+    public string? DeferredText => Volatile.Read(ref _deferred);
+
+    /// <summary>立即解析按需条目（已解析时什么也不做）。</summary>
+    public void EnsureParsed()
+    {
+        if (Interlocked.Exchange(ref _deferred, null) is { } text)
+        {
+            Document.LoadNow(text);
+        }
     }
 
     public StreamingDocument Document { get; }

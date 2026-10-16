@@ -119,6 +119,46 @@ public sealed class StreamingDocument
         Complete();
     }
 
+    /// <summary>
+    /// 在调用线程上同步解析完整文本（用于按需解析的历史消息：视图第一次需要它时立即得到最终快照）。
+    /// 只能用于尚未提交过文本的文档；解析期间其他线程追加的文本会在之后由后台工作者处理。
+    /// </summary>
+    public void LoadNow(string markdown)
+    {
+        lock (_gate)
+        {
+            if (_running || _dirty)
+            {
+                throw new InvalidOperationException("LoadNow requires a document with no pending work.");
+            }
+            // 占用工作者：期间到达的追加只标记脏，结束后再交给后台
+            _running = true;
+        }
+        try
+        {
+            lock (_sourceLock)
+            {
+                _source.Clear();
+                _source.Append(markdown);
+                _completeRequested = true;
+                _sourceGeneration++;
+                _version++;
+            }
+            if (Process() is { } snapshot)
+            {
+                Volatile.Write(ref _latest, snapshot);
+                SnapshotReady?.Invoke(snapshot);
+            }
+        }
+        finally
+        {
+            if (TakeWork())
+            {
+                ThreadPool.UnsafeQueueUserWorkItem(static self => self.Run(), this, preferLocal: false);
+            }
+        }
+    }
+
     /// <summary>当前源码长度。</summary>
     public int Length
     {

@@ -73,6 +73,12 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
     private bool _settingOffset;
     private TextSegmentView? _tail;
 
+    // 行结构变化前记下的锚点（视口内第一行及其相对视口的位置），下一次测量时恢复，
+    // 使在视口上方插入条目、按需解析的条目展开为真实行时，视口内容不跳动
+    private PendingAnchor? _pendingAnchor;
+
+    private sealed record PendingAnchor(Row Row, double Delta, double EntryDelta);
+
     public TranscriptPanel()
     {
         ClipToBounds = true;
@@ -144,6 +150,7 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
     // 按引用复用已有条目的状态（行、视图、已应用快照），只为新条目创建状态
     private void SyncEntries()
     {
+        CaptureAnchor();
         var existing = _entries.ToDictionary(s => s.Entry);
         var next = new List<EntryState>(_source.Count);
         foreach (var entry in _source)
@@ -235,21 +242,37 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
     /// <summary>把所有文档的最新快照应用到行上（每帧最多一次；测试中可直接调用）。</summary>
     public void ApplyLatest()
     {
+        ApplyAll();
+        InvalidateMeasure();
+    }
+
+    private void ApplyAll()
+    {
         for (var i = 0; i < _entries.Count; i++)
         {
             var state = _entries[i];
-            if (state.Entry is not MarkdownEntry markdown)
+            if (state.Entry is not MarkdownEntry markdown || !markdown.IsParsed)
             {
                 continue;
             }
             var context = ContextFor(i, state);
             var latest = markdown.Document.Latest;
+            if (state.Rows.Count > 0 && state.Rows[0].Block is null)
+            {
+                // 按需解析的条目刚解析完：去掉估算高度的占位行，按快照重建
+                CaptureAnchor();
+                state.Rows.Clear();
+                state.Slots.Clear();
+                state.Applied = null;
+                _rowsDirty = true;
+            }
             var contextChanged = state.Rows.Any(r => r.View is BlockView view && !ReferenceEquals(view.Block, r.Block)) || state.Applied is null;
             if (ReferenceEquals(latest, state.Applied) && !contextChanged)
             {
                 RefreshRealizedContexts(state, context);
                 continue;
             }
+            CaptureAnchor();
             foreach (var op in SnapshotDiff.Compute(state.Applied, latest))
             {
                 var rowStart = 0;
@@ -327,7 +350,99 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
             state.Applied = latest;
             RefreshRealizedContexts(state, context);
         }
-        InvalidateMeasure();
+    }
+
+    private void CaptureAnchor()
+    {
+        if (_pendingAnchor is not null || _pinned || _rows.Count == 0)
+        {
+            return;
+        }
+        EnsureTops();
+        var index = FirstRowAt(_offset.Y);
+        if (index >= _rows.Count)
+        {
+            return;
+        }
+        var row = _rows[index];
+        var entryTop = row.Owner.Rows.Count > 0 ? row.Owner.Rows[0].Top : row.Top;
+        _pendingAnchor = new PendingAnchor(row, row.Top - _offset.Y, entryTop - _offset.Y);
+    }
+
+    private void RestoreAnchor()
+    {
+        if (_pendingAnchor is not { } anchor)
+        {
+            return;
+        }
+        _pendingAnchor = null;
+        if (_pinned || !_entries.Contains(anchor.Row.Owner))
+        {
+            return;
+        }
+        if (anchor.Row.Owner.Rows.Contains(anchor.Row))
+        {
+            _offset = new Vector(0, Math.Max(0, anchor.Row.Top - anchor.Delta));
+        }
+        else if (anchor.Row.Owner.Rows.Count > 0)
+        {
+            // 锚点行已被替换（占位行展开）：保持所在条目顶部的位置
+            _offset = new Vector(0, Math.Max(0, anchor.Row.Owner.Rows[0].Top - anchor.EntryDelta));
+        }
+    }
+
+    // 视口附近还没解析的按需条目：同步解析并展开为真实行（可能连带让更多条目进入视口，最多几轮）
+    private void ParseVisibleDeferred(double height)
+    {
+        for (var round = 0; round < 8; round++)
+        {
+            var offset = _pinned ? Math.Max(0, _extent.Height - height) : _offset.Y;
+            var top = Math.Max(0, offset - Overscan);
+            var bottom = offset + height + Overscan;
+            var parsed = false;
+            for (var i = FirstRowAt(top); i < _rows.Count && _rows[i].Top <= bottom; i++)
+            {
+                if (_rows[i].Block is null && _rows[i].Owner.Entry is MarkdownEntry { IsParsed: false } markdown)
+                {
+                    CaptureAnchor();
+                    markdown.EnsureParsed();
+                    parsed = true;
+                }
+            }
+            if (!parsed)
+            {
+                return;
+            }
+            ApplyAll();
+            EnsureRows();
+            EnsureTops();
+            RestoreAnchor();
+        }
+    }
+
+    // 按需条目解析前的高度估算：按每行字符数与换行数
+    private double EstimateText(string text)
+    {
+        var style = _style ?? MarkdownStyle.Resolve(this);
+        var width = double.IsFinite(_width) && _width > 0 ? _width : 720;
+        var charsPerLine = Math.Max(10, width / (style.FontSize * 0.62));
+        double height = 0;
+        var blankRun = false;
+        foreach (var line in text.AsSpan().EnumerateLines())
+        {
+            if (line.IsWhiteSpace())
+            {
+                if (!blankRun)
+                {
+                    height += style.BlockSpacing;
+                }
+                blankRun = true;
+                continue;
+            }
+            blankRun = false;
+            height += Math.Max(1, Math.Ceiling(line.Length / charsPerLine)) * style.LineHeight;
+        }
+        return Math.Max(style.LineHeight, height);
     }
 
     // 样式变化后已实例化的视图需要按新上下文重新应用
@@ -446,6 +561,11 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
                     state.Rows.Add(new Row(state) { Height = 60 });
                 }
             }
+            else if (state.Entry is MarkdownEntry { IsParsed: false } deferred && state.Rows.Count == 0)
+            {
+                // 按需解析的条目：一个估算高度的占位行，进入视口附近时才解析
+                state.Rows.Add(new Row(state) { Height = EstimateText(deferred.DeferredText ?? "") });
+            }
             _rows.AddRange(state.Rows);
         }
         _rowsDirty = false;
@@ -562,6 +682,8 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
         _style ??= MarkdownStyle.Resolve(this);
         EnsureRows();
         EnsureTops();
+        RestoreAnchor();
+        ParseVisibleDeferred(height);
 
         // 记录锚点：视口内第一行及其相对视口的位置
         var anchorIndex = FirstRowAt(_offset.Y);
@@ -581,6 +703,10 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
             for (var i = FirstRowAt(top); i < _rows.Count && _rows[i].Top <= bottom; i++)
             {
                 var row = _rows[i];
+                if (row.Block is null && row.Owner.Entry is MarkdownEntry)
+                {
+                    continue;
+                }
                 var view = Realize(row);
                 keep.Add(row);
                 if (!row.Measured || !view.IsMeasureValid)
@@ -709,6 +835,7 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
             }
             _offset = new Vector(0, y);
             _pinned = y >= max - 2;
+            _pendingAnchor = null;
             InvalidateMeasure();
         }
     }
@@ -749,6 +876,7 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
         var max = Math.Max(0, _extent.Height - _viewport.Height);
         _offset = new Vector(0, Math.Clamp(y, 0, max));
         _pinned = _offset.Y >= max - 2;
+        _pendingAnchor = null;
         InvalidateMeasure();
         _settingOffset = true;
         try
@@ -772,7 +900,22 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
 
     Plugins.PluginRegistry? ISelectionHost.Plugins => MarkdownServices.GetServices(this).Registry;
 
-    DocumentSnapshot? ISelectionHost.GetSnapshot(int entry) => entry >= 0 && entry < _entries.Count ? _entries[entry].Applied : null;
+    DocumentSnapshot? ISelectionHost.GetSnapshot(int entry)
+    {
+        if (entry < 0 || entry >= _entries.Count)
+        {
+            return null;
+        }
+        var state = _entries[entry];
+        if (state.Entry is MarkdownEntry markdown && (!markdown.IsParsed || state.Applied is null))
+        {
+            // 选区 / 复制跨过尚未解析的条目：就地解析，下一帧再展开它的行
+            markdown.EnsureParsed();
+            RequestFrame();
+            return markdown.Document.Latest;
+        }
+        return state.Applied;
+    }
 
     string ISelectionHost.GetSource(int entry, int start, int length) =>
         entry >= 0 && entry < _entries.Count && _entries[entry].Entry is MarkdownEntry markdown ? markdown.Document.GetText(start, length) : "";
