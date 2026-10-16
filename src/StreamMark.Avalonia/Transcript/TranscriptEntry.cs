@@ -1,4 +1,5 @@
 using StreamMark.Avalonia.Rendering;
+using StreamMark.Core.Parsing;
 using StreamMark.Core.Streaming;
 
 namespace StreamMark.Avalonia.Transcript;
@@ -20,10 +21,10 @@ public sealed class MarkdownEntry : TranscriptEntry
     {
     }
 
-    /// <summary>静态消息。</summary>
-    public static MarkdownEntry FromText(string markdown)
+    /// <summary>静态消息。<paramref name="profile"/> 应与宿主的插件匹配（<c>MarkdownServices.Profile</c>）。</summary>
+    public static MarkdownEntry FromText(string markdown, MarkdownProfile? profile = null)
     {
-        var document = new StreamingDocument();
+        var document = new StreamingDocument(profile);
         document.Load(markdown);
         return new MarkdownEntry(document);
     }

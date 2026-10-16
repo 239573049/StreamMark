@@ -37,7 +37,7 @@ public sealed class MathBlockView : BlockView, ISelectableSegment
             return;
         }
         _latex = math.Latex;
-        var layout = context.Services.Math?.Layout(math.Latex.Trim(), display: true, out _error);
+        var layout = context.Services.Registry.Math?.Layout(math.Latex.Trim(), display: true, out _error);
         if (layout is not null)
         {
             _layout = layout;

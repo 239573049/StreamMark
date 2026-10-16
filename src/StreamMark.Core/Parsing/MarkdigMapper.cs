@@ -34,12 +34,13 @@ internal static class MarkdigMapper
     /// <summary>
     /// 转换整篇文档。<paramref name="map"/> 把被解析文本中的位置映射回整篇源码中的位置。
     /// </summary>
-    public static ImmutableArray<MarkdownBlock> MapDocument(MarkdownDocument document, OffsetMap map)
+    public static ImmutableArray<MarkdownBlock> MapDocument(MarkdownDocument document, MarkdownProfile profile, OffsetMap map)
     {
+        var ctx = new MapContext(profile, map);
         var builder = ImmutableArray.CreateBuilder<MarkdownBlock>(document.Count);
         foreach (var block in document)
         {
-            if (Map(block, map) is { } mapped)
+            if (Map(block, ctx) is { } mapped)
             {
                 builder.Add(mapped);
             }
@@ -47,57 +48,66 @@ internal static class MarkdigMapper
         return builder.ToImmutable();
     }
 
-    private static MarkdownBlock? Map(MdBlock block, OffsetMap map)
+    private static MarkdownBlock? Map(MdBlock block, MapContext ctx)
     {
+        // 插件映射优先
+        foreach (var mapper in ctx.Profile.BlockMappers)
+        {
+            if (mapper(block, ctx) is { } custom)
+            {
+                return custom.Range == default ? custom with { Range = RangeOf(block, ctx) } : custom;
+            }
+        }
         MarkdownBlock? mapped = block switch
         {
-            MdHeadingBlock heading => new Model.HeadingBlock(heading.Level, MapInlines(heading.Inline), heading.TryGetAttributes()?.Id),
-            MdParagraphBlock paragraph => new Model.ParagraphBlock(MapInlines(paragraph.Inline)),
+            MdHeadingBlock heading => new Model.HeadingBlock(heading.Level, MapInlines(heading.Inline, ctx), heading.TryGetAttributes()?.Id),
+            MdParagraphBlock paragraph => new Model.ParagraphBlock(MapInlines(paragraph.Inline, ctx)),
             MdMathBlock math => new Model.MathBlock(LinesToString(math), IsOpen: math.ClosingFencedCharCount == 0),
             FencedCodeBlock fenced => MapFencedCode(fenced),
             MdCodeBlock code => new Model.CodeBlock(null, null, LinesToString(code), IsFenced: false, IsOpen: false),
-            MdAlertBlock alert => new Model.AlertBlock(alert.Kind.ToString().ToUpperInvariant(), MapChildren(alert, map)),
-            MdQuoteBlock quote => new Model.QuoteBlock(MapChildren(quote, map)),
-            MdListBlock list => MapList(list, map),
-            MdTable table => MapTable(table),
+            MdAlertBlock alert => new Model.AlertBlock(alert.Kind.ToString().ToUpperInvariant(), MapChildren(alert, ctx)),
+            MdQuoteBlock quote => new Model.QuoteBlock(MapChildren(quote, ctx)),
+            MdListBlock list => MapList(list, ctx),
+            MdTable table => MapTable(table, ctx),
             MdThematicBreakBlock => new Model.ThematicBreakBlock(),
             MdHtmlBlock html => new Model.HtmlBlock(LinesToString(html)),
-            FootnoteGroup group => MapFootnotes(group, map),
-            DefinitionList definitions => MapDefinitions(definitions, map),
-            CustomContainer container => new CustomContainerBlock(container.Info, container.Arguments, MapChildren(container, map)),
+            FootnoteGroup group => MapFootnotes(group, ctx),
+            DefinitionList definitions => MapDefinitions(definitions, ctx),
+            CustomContainer container => new CustomContainerBlock(container.Info, container.Arguments, MapChildren(container, ctx)),
+            HtmlComponentBlock component => new ComponentBlock(component.Name.ToLowerInvariant(), component.Attributes, MapChildren(component, ctx)),
             // 链接引用定义只影响其它块的解析结果，本身不渲染
             LinkReferenceDefinitionGroup or LinkReferenceDefinition or BlankLineBlock => null,
-            ContainerBlock container => new Model.QuoteBlock(MapChildren(container, map)),
-            LeafBlock leaf => new Model.ParagraphBlock(MapInlines(leaf.Inline)),
+            ContainerBlock container => new Model.QuoteBlock(MapChildren(container, ctx)),
+            LeafBlock leaf => new Model.ParagraphBlock(MapInlines(leaf.Inline, ctx)),
             _ => null,
         };
-        return mapped is null ? null : mapped with { Range = RangeOf(block, map) };
+        return mapped is null ? null : mapped with { Range = RangeOf(block, ctx) };
     }
 
-    private static SourceRange RangeOf(MdBlock block, OffsetMap map)
+    internal static SourceRange RangeOf(MdBlock block, MapContext ctx)
     {
         var span = block.Span;
         if (block is FencedCodeBlock { ClosingFencedCharCount: 0 } or MdMathBlock { ClosingFencedCharCount: 0 })
         {
             // 未闭合的围栏块一定延伸到被解析文本的末尾（Markdig 给出的 Span 只覆盖开头一行）
-            var openStart = map.ToSource(span.Start);
-            return new SourceRange(openStart, map.SourceEnd - openStart);
+            var openStart = ctx.Map.ToSource(span.Start);
+            return new SourceRange(openStart, ctx.Map.SourceEnd - openStart);
         }
         if (span.IsEmpty)
         {
-            var at = map.ToSource(Math.Max(span.Start, 0));
+            var at = ctx.Map.ToSource(Math.Max(span.Start, 0));
             return new SourceRange(at, 0);
         }
-        var start = map.ToSource(span.Start);
-        return new SourceRange(start, map.ToSource(span.End + 1) - start);
+        var start = ctx.Map.ToSource(span.Start);
+        return new SourceRange(start, ctx.Map.ToSource(span.End + 1) - start);
     }
 
-    private static ImmutableArray<MarkdownBlock> MapChildren(ContainerBlock container, OffsetMap map)
+    internal static ImmutableArray<MarkdownBlock> MapChildren(ContainerBlock container, MapContext ctx)
     {
         var builder = ImmutableArray.CreateBuilder<MarkdownBlock>(container.Count);
         foreach (var child in container)
         {
-            if (Map(child, map) is { } mapped)
+            if (Map(child, ctx) is { } mapped)
             {
                 builder.Add(mapped);
             }
@@ -116,7 +126,7 @@ internal static class MarkdigMapper
         return new Model.CodeBlock(language, info, LinesToString(fenced), IsFenced: true, IsOpen: fenced.ClosingFencedCharCount == 0);
     }
 
-    private static Model.ListBlock MapList(MdListBlock list, OffsetMap map)
+    private static Model.ListBlock MapList(MdListBlock list, MapContext ctx)
     {
         var items = ImmutableArray.CreateBuilder<Model.ListItemBlock>(list.Count);
         foreach (var child in list)
@@ -125,7 +135,7 @@ internal static class MarkdigMapper
             {
                 continue;
             }
-            var children = MapChildren(item, map);
+            var children = MapChildren(item, ctx);
             bool? task = null;
             // 任务复选框是首个段落的第一个行内元素：提升为列表项属性，并从段落文本中去掉
             if (children.Length > 0 && children[0] is Model.ParagraphBlock first && first.Content.Objects is [{ Kind: InlineObjectKind.TaskCheckbox, Offset: 0 } checkbox, ..])
@@ -133,7 +143,7 @@ internal static class MarkdigMapper
                 task = checkbox.Flag;
                 children = children.SetItem(0, first with { Content = StripLeadingObject(first.Content) });
             }
-            items.Add(new Model.ListItemBlock(task, children) { Range = RangeOf(item, map) });
+            items.Add(new Model.ListItemBlock(task, children) { Range = RangeOf(item, ctx) });
         }
         var start = 1;
         if (list.IsOrdered && list.OrderedStart is { } orderedStart && int.TryParse(orderedStart, out var parsed))
@@ -165,7 +175,7 @@ internal static class MarkdigMapper
         return new InlineContent(content.Text[cut..], spans.ToImmutable(), content.Links, objects.ToImmutable());
     }
 
-    private static Model.TableBlock MapTable(MdTable table)
+    private static Model.TableBlock MapTable(MdTable table, MapContext ctx)
     {
         var columns = ImmutableArray.CreateBuilder<TableAlignment>(table.ColumnDefinitions.Count);
         foreach (var column in table.ColumnDefinitions)
@@ -189,27 +199,27 @@ internal static class MarkdigMapper
             foreach (var cellBlock in row)
             {
                 var cell = (TableCell)cellBlock;
-                cells.Add(cell.Count > 0 && cell[0] is LeafBlock leaf ? MapInlines(leaf.Inline) : InlineContent.Empty);
+                cells.Add(cell.Count > 0 && cell[0] is LeafBlock leaf ? MapInlines(leaf.Inline, ctx) : InlineContent.Empty);
             }
             rows.Add(new Model.TableRow(row.IsHeader, cells.ToImmutable()));
         }
         return new Model.TableBlock(columns.ToImmutable(), rows.ToImmutable());
     }
 
-    private static FootnotesBlock MapFootnotes(FootnoteGroup group, OffsetMap map)
+    private static FootnotesBlock MapFootnotes(FootnoteGroup group, MapContext ctx)
     {
         var footnotes = ImmutableArray.CreateBuilder<FootnoteDefinition>(group.Count);
         foreach (var child in group)
         {
             if (child is Footnote footnote)
             {
-                footnotes.Add(new FootnoteDefinition(footnote.Label ?? footnote.Order.ToString(), footnote.Order, MapChildren(footnote, map)));
+                footnotes.Add(new FootnoteDefinition(footnote.Label ?? footnote.Order.ToString(), footnote.Order, MapChildren(footnote, ctx)));
             }
         }
         return new FootnotesBlock(footnotes.ToImmutable());
     }
 
-    private static DefinitionListBlock MapDefinitions(DefinitionList list, OffsetMap map)
+    private static DefinitionListBlock MapDefinitions(DefinitionList list, MapContext ctx)
     {
         var items = ImmutableArray.CreateBuilder<Model.DefinitionItem>(list.Count);
         foreach (var child in list)
@@ -224,9 +234,9 @@ internal static class MarkdigMapper
             {
                 if (part is DefinitionTerm term)
                 {
-                    terms.Add(MapInlines(term.Inline));
+                    terms.Add(MapInlines(term.Inline, ctx));
                 }
-                else if (Map(part, map) is { } mapped)
+                else if (Map(part, ctx) is { } mapped)
                 {
                     definitions.Add(mapped);
                 }
@@ -256,42 +266,58 @@ internal static class MarkdigMapper
         return sb.ToString();
     }
 
-    private static InlineContent MapInlines(ContainerInline? root)
+    internal static InlineContent MapInlines(ContainerInline? root, MapContext ctx)
     {
         if (root is null || root.FirstChild is null)
         {
             return InlineContent.Empty;
         }
-        var builder = new InlineBuilder();
-        builder.Walk(root, InlineStyle.None, -1);
+        var builder = new InlineBuilder(ctx);
+        builder.Walk(root, InlineStyle.None, -1, -1);
         return builder.Build();
     }
 
     /// <summary>深度优先遍历行内树，生成扁平文本 + 样式区间。</summary>
-    private sealed class InlineBuilder
+    private sealed class InlineBuilder(MapContext ctx) : InlineMapContext
     {
         private readonly StringBuilder _text = new();
+        private readonly List<InlineComponent> _components = [];
+        // 插件回调期间的当前样式状态
+        private InlineStyle _style;
+        private int _link = -1;
+        private int _component = -1;
         private readonly List<InlineSpan> _spans = [];
         private readonly List<LinkTarget> _links = [];
         private readonly List<InlineObject> _objects = [];
 
-        public void Walk(ContainerInline container, InlineStyle style, int link)
+        public void Walk(ContainerInline container, InlineStyle style, int link, int component)
         {
             for (var inline = container.FirstChild; inline is not null; inline = inline.NextSibling)
             {
-                Visit(inline, style, link);
+                Visit(inline, style, link, component);
             }
         }
 
-        private void Visit(Inline inline, InlineStyle style, int link)
+        private void Visit(Inline inline, InlineStyle style, int link, int component)
         {
+            if (!ctx.Profile.InlineMappers.IsEmpty)
+            {
+                (_style, _link, _component) = (style, link, component);
+                foreach (var mapper in ctx.Profile.InlineMappers)
+                {
+                    if (mapper(inline, this))
+                    {
+                        return;
+                    }
+                }
+            }
             switch (inline)
             {
                 case LiteralInline literal:
-                    Append(literal.Content.AsSpan(), style, link);
+                    Append(literal.Content.AsSpan(), style, link, component);
                     break;
                 case CodeInline code:
-                    Append(code.Content, style | InlineStyle.Code, link);
+                    Append(code.Content, style | InlineStyle.Code, link, component);
                     break;
                 case MathInline math:
                     var display = math is BackslashMathInline { IsDisplay: true } || (math is not BackslashMathInline && math.DelimiterCount >= 2);
@@ -301,16 +327,16 @@ internal static class MarkdigMapper
                     AddObject(InlineObjectKind.TaskCheckbox, "", flag: task.Checked);
                     break;
                 case LineBreakInline lineBreak:
-                    Append(lineBreak.IsHard ? "\n" : SoftBreak(), style, link);
+                    Append(lineBreak.IsHard ? "\n" : SoftBreak(), style, link, component);
                     break;
                 case HtmlEntityInline entity:
-                    Append(entity.Transcoded.AsSpan(), style, link);
+                    Append(entity.Transcoded.AsSpan(), style, link, component);
                     break;
                 case AutolinkInline autolink:
                     {
                         var url = autolink.IsEmail && !autolink.Url.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase) ? "mailto:" + autolink.Url : autolink.Url;
                         var index = AddLink(url, null, isAutoLink: true);
-                        Append(autolink.Url, style | InlineStyle.Link, index);
+                        Append(autolink.Url, style | InlineStyle.Link, index, component);
                         break;
                     }
                 case LinkInline { IsImage: true } image:
@@ -321,41 +347,62 @@ internal static class MarkdigMapper
                         var url = anchor.GetDynamicUrl?.Invoke() ?? anchor.Url ?? "";
                         if (url == Remend.Remend.IncompleteLinkUrl)
                         {
-                            Walk(anchor, style | InlineStyle.IncompleteLink, -1);
+                            Walk(anchor, style | InlineStyle.IncompleteLink, -1, component);
                         }
                         else
                         {
-                            Walk(anchor, style | InlineStyle.Link, AddLink(url, anchor.Title, anchor.IsAutoLink));
+                            Walk(anchor, style | InlineStyle.Link, AddLink(url, anchor.Title, anchor.IsAutoLink), component);
                         }
                         break;
                     }
                 case EmphasisInline emphasis:
-                    Walk(emphasis, style | EmphasisStyle(emphasis), link);
+                    Walk(emphasis, style | EmphasisStyle(emphasis), link, component);
                     break;
                 case FootnoteLink { IsBackLink: false } footnote:
                     {
                         var index = AddLink("#fn:" + footnote.Footnote.Label, null, isAutoLink: false);
-                        Append(footnote.Footnote.Order.ToString(), style | InlineStyle.FootnoteReference | InlineStyle.Superscript, index);
+                        Append(footnote.Footnote.Order.ToString(), style | InlineStyle.FootnoteReference | InlineStyle.Superscript, index, component);
                         break;
                     }
                 case HtmlInline html:
-                    VisitHtml(html.Tag, style, link);
+                    VisitHtml(html.Tag, style, link, component);
+                    break;
+                case ComponentLeafInline leaf:
+                    if (string.Equals(leaf.Name, "img", StringComparison.OrdinalIgnoreCase))
+                    {
+                        AddObject(InlineObjectKind.Image, leaf.Attributes["src"] ?? "", alt: leaf.Attributes["alt"], title: leaf.Attributes["title"], attributes: leaf.Attributes);
+                    }
+                    else
+                    {
+                        AddObject(InlineObjectKind.Component, leaf.Name.ToLowerInvariant(), attributes: leaf.Attributes);
+                    }
+                    break;
+                case ComponentContainerInline pair:
+                    if (ComponentSpec.StyleFor(pair.Name) is { } builtInStyle)
+                    {
+                        Walk(pair, style | builtInStyle, link, component);
+                    }
+                    else
+                    {
+                        _components.Add(new InlineComponent(pair.Name.ToLowerInvariant(), pair.Attributes));
+                        Walk(pair, style, link, _components.Count - 1);
+                    }
                     break;
                 case ContainerInline nested:
-                    Walk(nested, style, link);
+                    Walk(nested, style, link, component);
                     break;
             }
         }
 
         // 行内 HTML：只解释 <br>，其余标签按原文显示（可见、安全）
-        private void VisitHtml(string tag, InlineStyle style, int link)
+        private void VisitHtml(string tag, InlineStyle style, int link, int component)
         {
             if (tag.StartsWith("<br", StringComparison.OrdinalIgnoreCase))
             {
-                Append("\n", style, link);
+                Append("\n", style, link, component);
                 return;
             }
-            Append(tag, style, link);
+            Append(tag, style, link, component);
         }
 
         private static InlineStyle EmphasisStyle(EmphasisInline emphasis) => emphasis.DelimiterChar switch
@@ -390,13 +437,16 @@ internal static class MarkdigMapper
             return _links.Count - 1;
         }
 
-        private void AddObject(InlineObjectKind kind, string value, string? alt = null, string? title = null, bool flag = false)
+        private void AddObject(InlineObjectKind kind, string value, string? alt = null, string? title = null, bool flag = false, ComponentAttributes? attributes = null)
         {
-            _objects.Add(new InlineObject(_text.Length, kind, value, alt, string.IsNullOrEmpty(title) ? null : title, flag));
+            _objects.Add(new InlineObject(_text.Length, kind, value, alt, string.IsNullOrEmpty(title) ? null : title, flag)
+            {
+                Attributes = attributes ?? ComponentAttributes.Empty,
+            });
             _text.Append(InlineObject.Placeholder);
         }
 
-        private void Append(ReadOnlySpan<char> text, InlineStyle style, int link)
+        private void Append(ReadOnlySpan<char> text, InlineStyle style, int link, int component)
         {
             if (text.IsEmpty)
             {
@@ -404,19 +454,36 @@ internal static class MarkdigMapper
             }
             var start = _text.Length;
             _text.Append(text);
-            if (style == InlineStyle.None && link < 0)
+            if (style == InlineStyle.None && link < 0 && component < 0)
             {
                 return;
             }
             // 与前一个相邻且样式相同的区间合并
-            if (_spans.Count > 0 && _spans[^1] is var last && last.End == start && last.Style == style && last.LinkIndex == link)
+            if (_spans.Count > 0 && _spans[^1] is var last && last.End == start && last.Style == style && last.LinkIndex == link && last.ComponentIndex == component)
             {
                 _spans[^1] = last with { Length = last.Length + text.Length };
                 return;
             }
-            _spans.Add(new InlineSpan(start, text.Length, style, link));
+            _spans.Add(new InlineSpan(start, text.Length, style, link, component));
         }
 
-        public InlineContent Build() => new(_text.ToString(), [.. _spans], [.. _links], [.. _objects]);
+        public InlineContent Build() => new(_text.ToString(), [.. _spans], [.. _links], [.. _objects]) { Components = [.. _components] };
+
+        // ---- InlineMapContext（插件） ----
+
+        public override InlineStyle Style => _style;
+
+        public override void AppendText(ReadOnlySpan<char> text, InlineStyle extraStyle = InlineStyle.None) =>
+            Append(text, _style | extraStyle, _link, _component);
+
+        public override void AppendObject(InlineObjectKind kind, string value, ComponentAttributes? attributes = null, string? alt = null, bool flag = false) =>
+            AddObject(kind, value, alt, flag: flag, attributes: attributes);
+
+        public override void Walk(ContainerInline container, InlineStyle extraStyle = InlineStyle.None)
+        {
+            var (style, link, component) = (_style, _link, _component);
+            Walk(container, style | extraStyle, link, component);
+            (_style, _link, _component) = (style, link, component);
+        }
     }
 }

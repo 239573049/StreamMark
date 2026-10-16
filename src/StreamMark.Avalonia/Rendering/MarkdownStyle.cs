@@ -23,6 +23,7 @@ public sealed class MarkdownStyle
     public required IBrush InlineCodeBackground { get; init; }
     public required IBrush InlineCodeForeground { get; init; }
     public required IBrush ListMarkerForeground { get; init; }
+    public required IBrush MarkBackground { get; init; }
     public required IBrush QuoteBorderBrush { get; init; }
     public required IBrush TableBorderBrush { get; init; }
     public required IBrush TableHeaderBackground { get; init; }
@@ -102,6 +103,7 @@ public sealed class MarkdownStyle
             SecondaryForeground = secondary,
             InlineCodeForeground = Get<IBrush>(MarkdownResourceKeys.InlineCodeForeground, foreground),
             ListMarkerForeground = Get<IBrush>(MarkdownResourceKeys.ListMarkerForeground, secondary),
+            MarkBackground = Get<IBrush>(MarkdownResourceKeys.MarkBackground, new SolidColorBrush(isDark ? Color.FromArgb(0x55, 0xE6, 0xB4, 0x22) : Color.FromArgb(0x66, 0xFF, 0xE0, 0x66))),
             LinkForeground = Get<IBrush>(MarkdownResourceKeys.LinkForeground, Brushes.DodgerBlue),
             SelectionBackground = Get<IBrush>(MarkdownResourceKeys.SelectionBackground, new SolidColorBrush(Color.FromArgb(0x59, 0x40, 0x96, 0xFF))),
             CodeBackground = Get<IBrush>(MarkdownResourceKeys.CodeBackground, isDark ? new SolidColorBrush(Color.FromRgb(0x16, 0x1B, 0x22)) : new SolidColorBrush(Color.FromRgb(0xF6, 0xF8, 0xFA))),

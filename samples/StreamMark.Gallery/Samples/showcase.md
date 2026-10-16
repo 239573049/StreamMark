@@ -67,6 +67,19 @@ flowchart LR
 > [!TIP]
 > 选中任意文本后按 ⌘C 复制纯文本，⌘⇧C 复制 Markdown 源码。
 
+## 组件
+
+快捷键 <kbd>⌘</kbd>+<kbd>K</kbd>，H<sub>2</sub>O，E = mc<sup>2</sup>，<mark>高亮文字</mark>，引用来源<Citation id="1" />。
+
+<details>
+<summary>展开查看更多</summary>
+
+折叠块里的内容可以包含 **Markdown**：
+
+- 列表
+- `代码`
+</details>
+
 脚注示例[^1]。
 
 [^1]: 脚注内容会显示在文末。

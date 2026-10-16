@@ -22,6 +22,8 @@ public static class MarkdownResourceKeys
     public const string InlineCodeForeground = "Md.InlineCodeForeground";
     /// <summary>列表项目符号与序号的颜色，未设置时使用 <see cref="SecondaryForeground"/>。</summary>
     public const string ListMarkerForeground = "Md.ListMarkerForeground";
+    /// <summary><c>&lt;mark&gt;</c> 高亮背景。</summary>
+    public const string MarkBackground = "Md.MarkBackground";
     public const string QuoteBorderBrush = "Md.QuoteBorderBrush";
     public const string TableBorderBrush = "Md.TableBorderBrush";
     public const string TableHeaderBackground = "Md.TableHeaderBackground";

@@ -28,6 +28,8 @@ public sealed class CodeBlockView : BlockView
     private readonly CodeTextView _code = new();
     private TextLayout? _language;
     private DispatcherTimer? _copiedTimer;
+    private readonly List<(IconButton Button, Plugins.BlockActionDescriptor Action)> _actions = [];
+    private const string WrapState = "code.wrap";
 
     public CodeBlockView()
     {
@@ -37,8 +39,8 @@ public sealed class CodeBlockView : BlockView
         _copy.Click += async (_, _) => await CopyAsync();
         _wrap.Click += (_, _) =>
         {
-            _code.Wrap = !_code.Wrap;
-            _wrap.IsActive = _code.Wrap;
+            Wrap = !Wrap;
+            Context?.State.Set(TopKey, WrapState, Wrap);
             _wrap.InvalidateVisual();
             InvalidateMeasure();
         };
@@ -60,19 +62,56 @@ public sealed class CodeBlockView : BlockView
     {
         var code = (CodeBlock)block;
         var style = context.Style;
-        if (contextChanged || previous is not CodeBlock old || old.Language != code.Language)
+        if (contextChanged || previous is not CodeBlock old || old.Info != code.Info)
         {
-            _language = new TextLayout(string.IsNullOrEmpty(code.Language) ? "text" : code.Language,
-                new Typeface(style.MonospaceFontFamily), style.CodeFontSize * 0.92, style.SecondaryForeground);
-            foreach (var button in new[] { _copy, _wrap })
+            // 头部标题：语言，信息串带路径时显示 "语言 · 路径#L起-止"
+            var fence = Plugins.CodeFenceInfo.Parse(code.Info);
+            var title = string.IsNullOrEmpty(code.Language) ? "text" : code.Language;
+            if (fence.Path is { } path)
+            {
+                title += " · " + path + (fence.StartLine is { } start ? $"#L{start}" + (fence.EndLine is { } end && end != start ? $"-{end}" : "") : "");
+            }
+            _language = new TextLayout(title, new Typeface(style.MonospaceFontFamily), style.CodeFontSize * 0.92, style.SecondaryForeground,
+                textTrimming: TextTrimming.CharacterEllipsis, maxWidth: 480);
+            UpdateActions(context, code);
+            foreach (var button in new[] { _copy, _wrap }.Concat(_actions.Select(a => a.Button)))
             {
                 button.Foreground = style.SecondaryForeground;
                 button.HoverBackground = style.HoverBackground;
                 button.InvalidateVisual();
             }
         }
+        Wrap = context.State.Get(topKey, WrapState, false);
         _code.Set(context, KeyFor(context, topKey, ref segment), code.Code, code.Language, code.IsOpen);
         InvalidateMeasure();
+    }
+
+    // 插件注册的头部操作（例如"应用到文件""在终端运行"）
+    private void UpdateActions(RenderContext context, CodeBlock code)
+    {
+        foreach (var (button, _) in _actions)
+        {
+            RemoveChild(button);
+        }
+        _actions.Clear();
+        foreach (var action in context.Plugins.BlockActions)
+        {
+            if (!action.AppliesTo(code))
+            {
+                continue;
+            }
+            var button = new IconButton { Icon = action.Icon };
+            ToolTip.SetTip(button, action.Label);
+            button.Click += async (_, _) =>
+            {
+                if (Block is CodeBlock current)
+                {
+                    await action.Execute(new Plugins.BlockActionContext(current, this, Plugins.CodeFenceInfo.Parse(current.Info)));
+                }
+            };
+            _actions.Add((button, action));
+            AddChild(button);
+        }
     }
 
     private async Task CopyAsync()
@@ -96,6 +135,10 @@ public sealed class CodeBlockView : BlockView
     {
         _copy.Measure(Size.Infinity);
         _wrap.Measure(Size.Infinity);
+        foreach (var (button, _) in _actions)
+        {
+            button.Measure(Size.Infinity);
+        }
         var inner = Math.Max(0, availableSize.Width - Padding * 2);
         _code.Measure(new Size(inner, double.PositiveInfinity));
         var width = double.IsFinite(availableSize.Width) ? availableSize.Width : _code.DesiredSize.Width + Padding * 2;
@@ -105,7 +148,7 @@ public sealed class CodeBlockView : BlockView
     protected override Size ArrangeOverride(Size finalSize)
     {
         var x = finalSize.Width - 6;
-        foreach (var button in new[] { _copy, _wrap })
+        foreach (var button in new[] { _copy, _wrap }.Concat(_actions.Select(a => a.Button)))
         {
             x -= button.DesiredSize.Width;
             button.Arrange(new Rect(x, (HeaderHeight - button.DesiredSize.Height) / 2, button.DesiredSize.Width, button.DesiredSize.Height));
@@ -264,7 +307,7 @@ public sealed class CodeTextView : Control, ISelectableSegment
     // 后台增量着色：同一时刻最多一个任务，期间到达的新代码合并为一次
     private void RequestHighlight(string code)
     {
-        if (_context?.Services.Highlighter is not { } highlighter || string.IsNullOrEmpty(_language) || !highlighter.SupportsLanguage(_language))
+        if (_context?.Services.Registry.Highlighter is not { } highlighter || string.IsNullOrEmpty(_language) || !highlighter.SupportsLanguage(_language))
         {
             return;
         }

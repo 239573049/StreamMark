@@ -8,6 +8,7 @@
     </ItemGroup>
     <ItemGroup>
         <ProjectReference Include="..\StreamMark.Core\StreamMark.Core.csproj" />
+        <ProjectReference Include="..\StreamMark.Avalonia\StreamMark.Avalonia.csproj" />
     </ItemGroup>
     <ItemGroup>
         <InternalsVisibleTo Include="StreamMark.Avalonia.Tests" />

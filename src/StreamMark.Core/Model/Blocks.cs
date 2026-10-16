@@ -200,6 +200,19 @@ public sealed record DefinitionListBlock(ImmutableArray<DefinitionItem> Items) :
     }
 }
 
+/// <summary>
+/// 块级 HTML 组件（白名单标签，如 <c>&lt;details&gt;</c>、<c>&lt;think&gt;</c> 或插件注册的标签），内部内容按 Markdown 解析。
+/// </summary>
+public sealed record ComponentBlock(string Name, ComponentAttributes Attributes, ImmutableArray<MarkdownBlock> Children) : MarkdownBlock
+{
+    internal override void AddContent(ref Fingerprint fp)
+    {
+        fp.Add(Name);
+        Attributes.AddTo(ref fp);
+        AddChildren(ref fp, Children);
+    }
+}
+
 /// <summary><c>:::</c> 自定义容器，<see cref="Info"/> 为开头围栏后的信息串（如 <c>warning</c>）。</summary>
 public sealed record CustomContainerBlock(string? Info, string? Arguments, ImmutableArray<MarkdownBlock> Children) : MarkdownBlock
 {

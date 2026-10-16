@@ -34,6 +34,7 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
         public DocumentSnapshot? Applied;
         public RenderContext? Context;
         public readonly List<Row> Rows = [];
+        public readonly Plugins.BlockStateStore State = new();
         public Control? ContentView;
     }
 
@@ -221,7 +222,7 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
         if (state.Context is null || !ReferenceEquals(state.Context.Style, _style) || !ReferenceEquals(state.Context.Services, _services))
         {
             var streaming = (state.Entry as MarkdownEntry)?.State;
-            state.Context = new RenderContext(_style, _services, Selection, index, streaming);
+            state.Context = new RenderContext(_style, _services, Selection, index, streaming, state.State);
         }
         return state.Context;
     }
@@ -673,6 +674,8 @@ public sealed class TranscriptPanel : Panel, ILogicalScrollable, ISelectionHost
         _rows.Where(r => r.View is BlockView).SelectMany(r => ((BlockView)r.View!).Segments());
 
     int ISelectionHost.EntryCount => _entries.Count;
+
+    Plugins.PluginRegistry? ISelectionHost.Plugins => MarkdownServices.GetServices(this).Registry;
 
     DocumentSnapshot? ISelectionHost.GetSnapshot(int entry) => entry >= 0 && entry < _entries.Count ? _entries[entry].Applied : null;
 

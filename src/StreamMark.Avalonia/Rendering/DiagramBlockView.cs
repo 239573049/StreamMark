@@ -40,6 +40,7 @@ public sealed class DiagramBlockView : BlockView
         _toggle.Click += (_, _) =>
         {
             _showCode = !_showCode;
+            Context?.State.Set(TopKey, "diagram.code", _showCode);
             _toggle.Icon = _showCode ? MarkdownIcons.Diagram : MarkdownIcons.Code;
             UpdateVisibility();
         };
@@ -57,6 +58,8 @@ public sealed class DiagramBlockView : BlockView
         var code = (CodeBlock)block;
         var style = context.Style;
         _code.Set(context, KeyFor(context, topKey, ref segment), code.Code, code.Language, code.IsOpen);
+        _showCode = context.State.Get(topKey, "diagram.code", false);
+        _toggle.Icon = _showCode ? MarkdownIcons.Diagram : MarkdownIcons.Code;
         foreach (var button in new[] { _toggle, _copy })
         {
             button.Foreground = style.SecondaryForeground;

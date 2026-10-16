@@ -15,7 +15,7 @@ public sealed class StreamingEquivalenceTests
     public static TheoryData<string, int> Cases()
     {
         var data = new TheoryData<string, int>();
-        foreach (var file in new[] { "chat-mixed.md", "code-heavy.md", "lists-quotes.md" })
+        foreach (var file in new[] { "chat-mixed.md", "code-heavy.md", "lists-quotes.md", "components.md" })
         {
             foreach (var chunk in new[] { 1, 3, 7, 32, 500 })
             {
@@ -26,6 +26,7 @@ public sealed class StreamingEquivalenceTests
         data.Add("chat-mixed.md", -1);
         data.Add("code-heavy.md", -2);
         data.Add("lists-quotes.md", -3);
+        data.Add("components.md", -4);
         return data;
     }
 

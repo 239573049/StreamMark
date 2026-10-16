@@ -85,3 +85,23 @@ StreamMark 是面向 AI 对话场景的高性能流式 Markdown 渲染库：Aval
 ### 主题解析
 
 `MarkdownStyle.Resolve(control)` 一次性读取 `Md.*` 资源：值为 `MarkdownResourceAlias` 时从控件本身查找目标键（宿主 token 可能只在窗口 / 主题作用域可见），`Color` 自动转画刷；未设置 `Md.FontFamily` / `Md.FontSize` 时沿用控件继承的 `TextElement` 字体，行高取字号 1.6 倍。主题变体或资源变化时重新解析并下发到所有视图。
+
+## 插件体系（第二阶段）
+
+```
+IMarkdownPlugin.Configure(MarkdownPluginBuilder)
+   ├─ Profile（Core）：AddComponent(ComponentSpec) / AddMarkdigExtension / MapBlock<T> / MapInline<T> / AddRemendHandler
+   ├─ UseMath / UseHighlighter / AddDiagramRenderer
+   ├─ AddBlockComponent(name, factory)        块级 HTML 组件视图
+   ├─ AddInlineComponent(name, renderer)      行内组件（自闭合 → DrawableTextRun；成对 → 样式 + 点击）
+   ├─ AddFenceView(language, factory)         按语言替换代码块视图（默认闭合后）
+   └─ AddBlockAction(descriptor)              代码块头部操作
+MarkdownServices { Plugins = [...] } → Registry（不可变）→ Profile（文档解析用）
+```
+
+- **组件语法只用白名单 HTML 标签**。`HtmlComponentBlockParser` 排在 `HtmlBlockParser` 之前，块级组件是 `ContainerBlock`，内容按 Markdown 解析，可跨空行、同名嵌套；以行内组件开头的行交给段落解析器（否则会被当作第 7 类 HTML 块）。`HtmlComponentInlineParser` 排在 `AutolinkInlineParser` 之前，成对组件是未闭合的 `ContainerInline`，遇到结束标签时闭合。
+- **流式**：未闭合的块级组件在文档末尾自然结束，未闭合的行内成对组件包住其后的全部文字，写了一半的标签由 remend 去掉，因此不需要额外的补全处理器。切分器把块级组件当作不透明容器（`HtmlKind.Container`，带嵌套深度），内部不冻结。
+- **模型**：`ComponentBlock(Name, Attributes, Children)`；`InlineObjectKind.Component`（自闭合）；成对组件用 `InlineSpan.ComponentIndex` 指向 `InlineContent.Components`。内置的 `kbd / sub / sup / mark / u` 直接映射为样式，`img` 映射为图片对象。
+- **内置组件**（`BuiltInComponentsPlugin`，总是启用，可被同名注册覆盖）：`<details>/<summary>`、`<think>` 折叠块，`<Citation id/>` 引用标签，`<cite href>` 引用文字。
+- **块状态**：`BlockStateStore` 每个文档一份，按 (块 key, 状态名) 保存折叠、换行、图表 / 源码切换等，视图回收或重建后保留。
+- **文档方言**：宿主创建文档时应传 `services.Profile`（`MarkdownEntry.FromText(text, profile)`、`new MarkdownStream(profile: …)`），否则插件注册的标签不会被解析。

@@ -1,6 +1,7 @@
 using Avalonia.Threading;
 using StreamMark.Avalonia.Rendering;
 using StreamMark.Core.Pacing;
+using StreamMark.Core.Parsing;
 using StreamMark.Core.Streaming;
 
 namespace StreamMark.Avalonia;
@@ -16,11 +17,11 @@ public sealed class MarkdownStream
     private readonly DispatcherTimer _timer;
     private bool _completeRequested;
 
-    public MarkdownStream(StreamPacerOptions? pacing = null, bool smooth = true, TimeSpan? fadeDuration = null)
+    public MarkdownStream(StreamPacerOptions? pacing = null, bool smooth = true, TimeSpan? fadeDuration = null, MarkdownProfile? profile = null)
     {
         _pacer = new StreamPacer(pacing);
         _smooth = smooth;
-        Document = new StreamingDocument();
+        Document = new StreamingDocument(profile);
         State = new StreamingState(fadeDuration ?? TimeSpan.FromMilliseconds(220));
         _timer = new DispatcherTimer(TimeSpan.FromMilliseconds(16), DispatcherPriority.Render, (_, _) => Tick());
     }

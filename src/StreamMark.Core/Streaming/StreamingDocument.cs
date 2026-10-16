@@ -1,5 +1,5 @@
 using System.Text;
-using Markdig;
+using StreamMark.Core.Parsing;
 using StreamMark.Core.Remend;
 
 namespace StreamMark.Core.Streaming;
@@ -34,10 +34,14 @@ public sealed class StreamingDocument
 
     private DocumentSnapshot _latest = DocumentSnapshot.Empty;
 
-    public StreamingDocument(MarkdownPipeline? pipeline = null, RemendOptions? remendOptions = null)
+    public StreamingDocument(MarkdownProfile? profile = null, RemendOptions? remendOptions = null)
     {
-        _composer = new DocumentComposer(pipeline, remendOptions);
+        Profile = profile ?? MarkdownProfile.Default;
+        _composer = new DocumentComposer(Profile, remendOptions);
     }
+
+    /// <summary>文档使用的 Markdown 方言。</summary>
+    public MarkdownProfile Profile { get; }
 
     /// <summary>最新快照（任意线程可读）。</summary>
     public DocumentSnapshot Latest => Volatile.Read(ref _latest);

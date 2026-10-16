@@ -29,6 +29,9 @@ public interface ISelectionHost
 
     /// <summary>拖拽选择时指针超出可视区域，宿主可借此自动滚动。</summary>
     void OnSelectionDrag(Point hostPoint) { }
+
+    /// <summary>插件注册表（复制时行内组件的纯文本由插件提供）。</summary>
+    Plugins.PluginRegistry? Plugins => null;
 }
 
 /// <summary>
@@ -215,13 +218,15 @@ public sealed class SelectionController
                     {
                         sb.Append(segment.Prefix);
                     }
-                    sb.Append(segment.Slice(s, e));
+                    sb.Append(segment.Slice(s, e, ComponentText));
                     first = false;
                 }
             }
         }
         return sb.ToString();
     }
+
+    private string? ComponentText(StreamMark.Core.Model.InlineObject obj) => _host.Plugins?.FindInlineComponent(obj.Value)?.ToPlainText(obj);
 
     /// <summary>选中内容所覆盖的完整块的 Markdown 源码。</summary>
     public string GetSelectedMarkdown()

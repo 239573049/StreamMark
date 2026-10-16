@@ -71,7 +71,8 @@ public sealed class SelectionModel
     /// <summary>某个片段内被选中的字符区间（左闭右开），未选中返回 null。</summary>
     public (int Start, int End)? GetSegmentRange(SegmentKey key, int length)
     {
-        if (Range is not { } range)
+        // 编号为负的片段（如自动生成的折叠块标题）不参与选区
+        if (key.Segment < 0 || Range is not { } range)
         {
             return null;
         }

@@ -27,6 +27,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
     private TextLayout? _layout;
     private double _layoutWidth = double.NaN;
     private int _hoverLink = -1;
+    private bool _hoverClickable;
     private bool _frameRequested;
 
     public TextSegmentView()
@@ -56,6 +57,16 @@ public sealed class TextSegmentView : Control, ISelectableSegment
     {
         add => AddHandler(LinkClickedEvent, value);
         remove => RemoveHandler(LinkClickedEvent, value);
+    }
+
+    /// <summary>可点击的行内组件被点击（冒泡），例如引用标签。</summary>
+    public static readonly RoutedEvent<ComponentClickedEventArgs> ComponentClickedEvent =
+        RoutedEvent.Register<TextSegmentView, ComponentClickedEventArgs>(nameof(ComponentClicked), RoutingStrategies.Bubble);
+
+    public event EventHandler<ComponentClickedEventArgs>? ComponentClicked
+    {
+        add => AddHandler(ComponentClickedEvent, value);
+        remove => RemoveHandler(ComponentClickedEvent, value);
     }
 
     /// <summary>设置内容与外观；内容或外观未变时不重新排版。</summary>
@@ -297,6 +308,41 @@ public sealed class TextSegmentView : Control, ISelectableSegment
     /// <summary>字符偏移 → 本地矩形。</summary>
     public Rect GetCharacterBounds(int offset) => _layout?.HitTestTextPosition(Math.Clamp(offset, 0, _content.Text.Length)) ?? default;
 
+    /// <summary>指针处可点击的组件（成对组件的文字或自闭合组件对象）。</summary>
+    private (string Name, ComponentAttributes Attributes)? ComponentAt(Point point)
+    {
+        if (_layout is null || _context is null || (_content.Components.IsEmpty && _content.Objects.IsEmpty))
+        {
+            return null;
+        }
+        var hit = _layout.HitTestPoint(point);
+        if (!hit.IsInside)
+        {
+            return null;
+        }
+        var index = hit.TextPosition;
+        foreach (var obj in _content.Objects)
+        {
+            if (obj.Kind == InlineObjectKind.Component && (obj.Offset == index || obj.Offset == index - 1 && hit.IsTrailing)
+                && _context.Plugins.FindInlineComponent(obj.Value) is { } renderer && renderer.IsClickable(obj.Attributes))
+            {
+                return (obj.Value, obj.Attributes);
+            }
+        }
+        foreach (var span in _content.Spans)
+        {
+            if (span.ComponentIndex >= 0 && index >= span.Start && index < span.End)
+            {
+                var component = _content.Components[span.ComponentIndex];
+                if (_context.Plugins.FindInlineComponent(component.Name) is { } renderer && renderer.IsClickable(component.Attributes))
+                {
+                    return (component.Name, component.Attributes);
+                }
+            }
+        }
+        return null;
+    }
+
     private int LinkAt(Point point)
     {
         if (_layout is null || _content.Links.IsEmpty)
@@ -322,11 +368,14 @@ public sealed class TextSegmentView : Control, ISelectableSegment
     protected override void OnPointerMoved(PointerEventArgs e)
     {
         base.OnPointerMoved(e);
-        var link = LinkAt(e.GetPosition(this));
-        if (link != _hoverLink)
+        var position = e.GetPosition(this);
+        var link = LinkAt(position);
+        var clickable = link >= 0 || ComponentAt(position) is not null;
+        if (link != _hoverLink || clickable != _hoverClickable)
         {
             _hoverLink = link;
-            Cursor = link >= 0 ? new Cursor(StandardCursorType.Hand) : Cursor.Default;
+            _hoverClickable = clickable;
+            Cursor = clickable ? new Cursor(StandardCursorType.Hand) : Cursor.Default;
         }
     }
 
@@ -334,6 +383,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
     {
         base.OnPointerExited(e);
         _hoverLink = -1;
+        _hoverClickable = false;
         Cursor = Cursor.Default;
     }
 
@@ -344,9 +394,20 @@ public sealed class TextSegmentView : Control, ISelectableSegment
         {
             return;
         }
-        var link = LinkAt(e.GetPosition(this));
-        // 拖拽选择时不触发链接
-        if (link >= 0 && _context is { Selection.IsEmpty: true })
+        // 拖拽选择时不触发链接 / 组件
+        if (_context is not { Selection.IsEmpty: true })
+        {
+            return;
+        }
+        var position = e.GetPosition(this);
+        if (ComponentAt(position) is { } component)
+        {
+            RaiseEvent(new ComponentClickedEventArgs(ComponentClickedEvent, this, component.Name, component.Attributes));
+            e.Handled = true;
+            return;
+        }
+        var link = LinkAt(position);
+        if (link >= 0)
         {
             var target = _content.Links[link];
             RaiseEvent(new LinkClickedEventArgs(LinkClickedEvent, this, target.Url, target.Title));
@@ -364,7 +425,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
         private readonly FontWeight _weight;
         private readonly IBrush _foreground;
         private readonly double _maxWidth;
-        private readonly Dictionary<InlineStyle, TextRunProperties> _properties = [];
+        private readonly Dictionary<(InlineStyle, int), TextRunProperties> _properties = [];
 
         public InlineTextSource(TextSegmentView owner, RenderContext context, InlineContent content, double fontSize, FontWeight weight, IBrush foreground, double maxWidth)
         {
@@ -403,6 +464,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
             }
 
             var style = InlineStyle.None;
+            var component = -1;
             foreach (var span in _content.Spans)
             {
                 if (span.End <= textSourceIndex)
@@ -415,11 +477,12 @@ public sealed class TextSegmentView : Control, ISelectableSegment
                     break;
                 }
                 style = span.Style;
+                component = span.ComponentIndex;
                 end = Math.Min(end, span.End);
                 break;
             }
 
-            return new TextCharacters(text.AsMemory(textSourceIndex, end - textSourceIndex), PropertiesFor(style));
+            return new TextCharacters(text.AsMemory(textSourceIndex, end - textSourceIndex), PropertiesFor(style, component));
         }
 
         private TextRun CreateObjectRun(InlineObject obj)
@@ -430,7 +493,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
             {
                 case InlineObjectKind.Math:
                     {
-                        if (_context.Services.Math?.Layout(obj.Value, obj.Flag, out _) is { } layout)
+                        if (_context.Services.Registry.Math?.Layout(obj.Value, obj.Flag, out _) is { } layout)
                         {
                             return new MathRun(layout, _fontSize * 1.05, _foreground, properties);
                         }
@@ -454,14 +517,20 @@ public sealed class TextSegmentView : Control, ISelectableSegment
                     }
                 case InlineObjectKind.TaskCheckbox:
                     return new CheckboxRun(obj.Flag, _fontSize, style.SecondaryForeground, style.LinkForeground, properties);
+                case InlineObjectKind.Component:
+                    {
+                        var renderer = _context.Plugins.FindInlineComponent(obj.Value);
+                        var context = new Plugins.InlineComponentContext(style, _fontSize, _foreground, properties, _maxWidth);
+                        return renderer?.CreateRun(obj, context) ?? new TextObjectRun("", properties, null);
+                    }
                 default:
                     return new TextCharacters(InlineObject.Placeholder.ToString(), properties);
             }
         }
 
-        private TextRunProperties PropertiesFor(InlineStyle style)
+        private TextRunProperties PropertiesFor(InlineStyle style, int component = -1)
         {
-            if (_properties.TryGetValue(style, out var cached))
+            if (_properties.TryGetValue((style, component), out var cached))
             {
                 return cached;
             }
@@ -503,15 +572,33 @@ public sealed class TextSegmentView : Control, ISelectableSegment
                 foreground = s.SecondaryForeground;
             }
             // 删除线在 Render 中自行绘制：部分字体（及无头环境的回退字体）缺少删除线度量
+            if (style.HasFlag(InlineStyle.Underline))
+            {
+                decorations = TextDecorations.Underline;
+            }
+            IBrush? background = isCode ? s.InlineCodeBackground : style.HasFlag(InlineStyle.Mark) ? s.MarkBackground : null;
+
+            // 成对行内组件（如 <cite>）的样式覆盖
+            if (component >= 0 && component < _content.Components.Length &&
+                _context.Plugins.FindInlineComponent(_content.Components[component].Name)?.GetStyle(_content.Components[component], s) is { } custom)
+            {
+                foreground = custom.Foreground ?? foreground;
+                background = custom.Background ?? background;
+                weight = custom.Weight ?? weight;
+                if (custom.Underline)
+                {
+                    decorations = TextDecorations.Underline;
+                }
+            }
 
             var properties = new GenericTextRunProperties(
                 new Typeface(family, fontStyle, weight),
                 size,
                 decorations,
                 foreground,
-                isCode ? s.InlineCodeBackground : null,
+                background,
                 baseline);
-            _properties[style] = properties;
+            _properties[(style, component)] = properties;
             return properties;
         }
     }
@@ -522,4 +609,11 @@ public sealed class LinkClickedEventArgs(RoutedEvent routedEvent, object source,
     public string Url { get; } = url;
 
     public string? Title { get; } = title;
+}
+
+public sealed class ComponentClickedEventArgs(RoutedEvent routedEvent, object source, string name, ComponentAttributes attributes) : RoutedEventArgs(routedEvent, source)
+{
+    public string Name { get; } = name;
+
+    public ComponentAttributes Attributes { get; } = attributes;
 }

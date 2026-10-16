@@ -28,23 +28,29 @@ Styles.Add(new StreamMarkTheme());
 Styles.Add(new AtomUIMarkdownTheme());
 
 // Window: rendering extensions shared by every Markdown view below it
-MarkdownServices.SetServices(window, new MarkdownServices
+var services = new MarkdownServices
 {
-    Math = RaTeXMathRenderer.Shared,
-    Highlighter = new TextMateSyntaxHighlighter(),
-    Diagrams = [new MermaidDiagramRenderer()],
-});
+    Plugins = [new RaTeXPlugin(), new TextMatePlugin(), new MermaidPlugin()],
+};
+MarkdownServices.SetServices(window, services);
+// documents should use the matching dialect so plugin tags are parsed
+var entry = MarkdownEntry.FromText(markdown, services.Profile);
 
 // Long chat transcript (virtualized, cross-message selection, stick-to-bottom)
 var transcript = new TranscriptView { MaxContentWidth = 760 };
 transcript.Entries.Add(new ContentEntry(userBubble));          // any control / data-templated item
-var reply = new MarkdownStream();                                // smoothing + fade-in + caret
+var reply = new MarkdownStream(profile: services.Profile);       // smoothing + fade-in + caret
 transcript.Entries.Add(new MarkdownEntry(reply));
 reply.Push(token);  /* … */  reply.Complete();
 
 // Single document
 var view = new MarkdownView { Markdown = "# Hello" };
 ```
+
+## Components (whitelisted HTML tags)
+
+Built in: `<details>/<summary>`, `<think>`, `<kbd>`, `<sub>`, `<sup>`, `<mark>`, `<u>`, `<cite href>`, `<Citation id="1"/>`, `<img src width height>`.
+Plugins add their own: `builder.AddBlockComponent("callout", _ => new CalloutView())`, `builder.AddInlineComponent("badge", renderer)`.
 
 ## Core usage
 

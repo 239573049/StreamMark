@@ -32,13 +32,14 @@ public static class Program
     /// <summary>渲染扩展：公式（RaTeX）、代码高亮（TextMate）、图表（Mermaid）。</summary>
     public static MarkdownServices CreateServices()
     {
-        var highlighter = new TextMateSyntaxHighlighter();
-        highlighter.Prewarm("csharp", "python", "typescript", "json", "bash");
         return new MarkdownServices
         {
-            Math = RaTeXMathRenderer.Shared,
-            Highlighter = highlighter,
-            Diagrams = [new MermaidDiagramRenderer()],
+            Plugins =
+            [
+                new RaTeXPlugin(),
+                new TextMatePlugin(prewarm: ["csharp", "python", "typescript", "json", "bash"]),
+                new MermaidPlugin(),
+            ],
         };
     }
 
@@ -79,11 +80,13 @@ public sealed class GalleryWindow : Window
         Width = 1000;
         Height = 820;
         Background = new SolidColorBrush(Color.FromRgb(0x12, 0x12, 0x16));
-        MarkdownServices.SetServices(this, Program.CreateServices());
+        var services = Program.CreateServices();
+        MarkdownServices.SetServices(this, services);
+        Profile = services.Profile;
 
         Transcript = new TranscriptView { MaxContentWidth = 820, Padding = new Thickness(0, 12, 0, 24) };
         Transcript.Entries.Add(new ContentEntry(Bubble("展示一下 StreamMark 支持的内容")));
-        Transcript.Entries.Add(MarkdownEntry.FromText(Program.Sample("showcase.md")));
+        Transcript.Entries.Add(MarkdownEntry.FromText(Program.Sample("showcase.md"), Profile));
 
         var stream = new Button { Content = "模拟流式回答", Margin = new Thickness(12), HorizontalAlignment = HorizontalAlignment.Left };
         stream.Click += (_, _) => _ = SimulateAsync();
@@ -95,6 +98,9 @@ public sealed class GalleryWindow : Window
     }
 
     public TranscriptView Transcript { get; }
+
+    /// <summary>与插件匹配的 Markdown 方言。</summary>
+    public StreamMark.Core.Parsing.MarkdownProfile Profile { get; }
 
     public static Control Bubble(string text) => new Border
     {
@@ -109,7 +115,7 @@ public sealed class GalleryWindow : Window
     public async Task SimulateAsync(int delayMs = 30)
     {
         Transcript.Entries.Add(new ContentEntry(Bubble("再来一遍，这次流式输出")));
-        var markdownStream = new MarkdownStream();
+        var markdownStream = new MarkdownStream(profile: Profile);
         Transcript.Entries.Add(new MarkdownEntry(markdownStream));
         Transcript.ScrollToEnd();
         var text = Program.Sample("showcase.md");

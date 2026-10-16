@@ -33,6 +33,7 @@ public class MarkdownView : Control, ISelectionHost
     private StreamingDocument? _ownDocument;
     private RenderContext? _context;
     private bool _frameRequested;
+    private readonly Plugins.BlockStateStore _state = new();
 
     static MarkdownView()
     {
@@ -100,7 +101,7 @@ public class MarkdownView : Control, ISelectionHost
     {
         if (Stream is null && Document is null)
         {
-            _ownDocument ??= new StreamingDocument();
+            _ownDocument ??= new StreamingDocument(MarkdownServices.GetServices(this).Profile);
             _ownDocument.Load(Markdown ?? "");
         }
         else
@@ -110,6 +111,7 @@ public class MarkdownView : Control, ISelectionHost
         Subscribe();
         _context = null;
         _presenter.Clear();
+        _state.Clear();
         Selection.Clear();
         RequestFrame();
     }
@@ -164,7 +166,7 @@ public class MarkdownView : Control, ISelectionHost
     }
 
     private RenderContext CreateContext() =>
-        new(MarkdownStyle.Resolve(this), MarkdownServices.GetServices(this), Selection, 0, Stream?.State);
+        new(MarkdownStyle.Resolve(this), MarkdownServices.GetServices(this), Selection, 0, Stream?.State, _state);
 
     private void InvalidateContext()
     {
@@ -232,6 +234,8 @@ public class MarkdownView : Control, ISelectionHost
     IEnumerable<ISelectableSegment> ISelectionHost.RealizedSegments() => _presenter.Views.SelectMany(v => v.Segments());
 
     int ISelectionHost.EntryCount => 1;
+
+    Plugins.PluginRegistry? ISelectionHost.Plugins => MarkdownServices.GetServices(this).Registry;
 
     DocumentSnapshot? ISelectionHost.GetSnapshot(int entry) => entry == 0 ? _presenter.Applied : null;
 

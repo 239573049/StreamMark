@@ -33,16 +33,18 @@ internal sealed class DocumentComposer
         SetextHeadings = false,
     };
 
-    private readonly MarkdownPipeline _pipeline;
+    private readonly MarkdownProfile _profile;
     private readonly RemendOptions _tailOptions;
     private AppendOnlyList<MarkdownBlock> _frozen = new();
-    private StreamSegmenter _segmenter = new();
+    private StreamSegmenter _segmenter;
     private int _generation;
 
-    public DocumentComposer(MarkdownPipeline? pipeline = null, RemendOptions? tailOptions = null)
+    public DocumentComposer(MarkdownProfile? profile = null, RemendOptions? tailOptions = null)
     {
-        _pipeline = pipeline ?? StreamMarkPipeline.Default;
-        _tailOptions = tailOptions ?? RemendOptions.Default;
+        _profile = profile ?? MarkdownProfile.Default;
+        var options = tailOptions ?? RemendOptions.Default;
+        _tailOptions = _profile.RemendHandlers.IsEmpty ? options : options with { Handlers = [.. options.Handlers ?? [], .. _profile.RemendHandlers] };
+        _segmenter = new StreamSegmenter(_profile.BlockComponentNames);
     }
 
     public int FrozenEnd => _segmenter.FrozenEnd;
@@ -50,7 +52,7 @@ internal sealed class DocumentComposer
     public void Reset()
     {
         _frozen = new AppendOnlyList<MarkdownBlock>();
-        _segmenter = new StreamSegmenter();
+        _segmenter = new StreamSegmenter(_profile.BlockComponentNames);
         _generation++;
     }
 
@@ -109,8 +111,8 @@ internal sealed class DocumentComposer
     internal ImmutableArray<MarkdownBlock> Parse(string raw, int @base, RemendOptions options)
     {
         var healed = RemendHealer.Complete(raw, options);
-        var document = Markdown.Parse(healed, _pipeline);
-        return MarkdigMapper.MapDocument(document, OffsetMap.Create(@base, raw, healed));
+        var document = Markdown.Parse(healed, _profile.Pipeline);
+        return MarkdigMapper.MapDocument(document, _profile, OffsetMap.Create(@base, raw, healed));
     }
 
     private static Model.CodeBlock OpenCodeBlock(string text, int from, int fenceStart, int contentStart, int indent, string? info)

@@ -5,7 +5,21 @@ namespace StreamMark.Avalonia.Rendering;
 /// <summary>块模型 → 块视图。</summary>
 public static class BlockViewFactory
 {
-    public static BlockView Create(MarkdownBlock block, RenderContext context) => ViewTypeFor(block, context) switch
+    public static BlockView Create(MarkdownBlock block, RenderContext context)
+    {
+        // 插件优先：块组件视图、按语言替换的代码围栏视图
+        if (block is ComponentBlock component)
+        {
+            return context.Plugins.TryGetBlockComponent(component.Name, out var factory) ? factory(component) : new Plugins.ComponentContainerView();
+        }
+        if (block is CodeBlock code && context.Plugins.FindFenceView(code) is { } fence)
+        {
+            return fence.Factory(code);
+        }
+        return CreateBuiltIn(block, context);
+    }
+
+    private static BlockView CreateBuiltIn(MarkdownBlock block, RenderContext context) => ViewTypeFor(block, context) switch
     {
         ViewType.Text => new TextBlockView(),
         ViewType.Code => new CodeBlockView(),
@@ -22,7 +36,23 @@ public static class BlockViewFactory
     };
 
     /// <summary>已有视图能否直接更新为新模型（类型一致即可复用）。</summary>
-    public static bool CanReuse(BlockView view, MarkdownBlock block, RenderContext context) => view switch
+    public static bool CanReuse(BlockView view, MarkdownBlock block, RenderContext context)
+    {
+        // 组件与插件围栏视图：同名 / 同语言、且视图类型与新建的一致时复用
+        if (block is ComponentBlock component)
+        {
+            return view.Block is ComponentBlock old && string.Equals(old.Name, component.Name, StringComparison.OrdinalIgnoreCase);
+        }
+        var fence = block is CodeBlock code ? context.Plugins.FindFenceView(code) : null;
+        var oldFence = view.Block is CodeBlock oldCode ? context.Plugins.FindFenceView(oldCode) : null;
+        if (fence is not null || oldFence is not null)
+        {
+            return ReferenceEquals(fence, oldFence);
+        }
+        return CanReuseBuiltIn(view, block, context);
+    }
+
+    private static bool CanReuseBuiltIn(BlockView view, MarkdownBlock block, RenderContext context) => view switch
     {
         TextBlockView => ViewTypeFor(block, context) == ViewType.Text,
         CodeBlockView => ViewTypeFor(block, context) == ViewType.Code,

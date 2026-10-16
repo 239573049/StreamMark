@@ -32,3 +32,7 @@
 - **TextMateSharp 不支持 Kotlin**（Grammars 包无该语法）；TOML 映射到 INI 语法。
 - **原生库的两条分发路径**：NuGet 包把各 RID 的 RaTeX 库放在 `runtimes/<rid>/native/`，使用方按自己的 RID 自动选用；仓库内通过项目引用使用的可执行项目（示例、测试、基准），由根目录 `Directory.Build.targets` 按其目标 RID 从 `artifacts/native/<rid>/` 复制（SDK 不会把 `RuntimeIdentifier` 传给被引用项目，原先的做法在交叉发布 osx-x64 时复制了 arm64 的库）。
 - **本机交叉编译** `native/cross-build.sh`：在 macOS 上用 cargo-zigbuild 生成全部 6 个桌面 RID。已在本机实测 osx-arm64 与 osx-x64（Rosetta）的 AOT Gallery 冒烟通过；Linux / Windows 产物已验证格式与导出符号，运行验证依赖 CI。
+- **第二阶段（2026-10-16）**：插件体系、技术债、图片子系统、AI 对话功能、交互与无障碍；自定义组件只用白名单 HTML 标签。
+- **不需要组件补全处理器**：计划中的 `ComponentCloser` 被取消。未闭合的块级容器由 Markdig 在文末关闭，未闭合的行内成对组件在映射时视为包住其后的文字，写了一半的标签由现有 HTML 处理器去掉；这样流式偏移也无需额外映射。
+- **`StreamMark.Highlighting.TextMate` 依赖 `StreamMark.Avalonia`**：为了提供 `TextMatePlugin`。高亮器本身仍只依赖 Core 接口。
+- **Markdig 的 `CanInterrupt` 对每个候选解析器都会调用（包括没有段落时）**，自定义块解析器只应在当前块是段落时限制打断；`Block.IsOpen` 在续行判断时不可靠，块级组件自行记录关闭状态（`BlockParser.Close`）。

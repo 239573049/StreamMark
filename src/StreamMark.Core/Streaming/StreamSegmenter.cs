@@ -19,6 +19,20 @@ internal sealed class StreamSegmenter
         Declaration,
         CData,
         Raw,
+        /// <summary>白名单块级组件（如 &lt;details&gt;），内部可含空行，带嵌套深度。</summary>
+        Container,
+    }
+
+    private readonly string[] _containerTags;
+    private int _containerDepth;
+
+    public StreamSegmenter() : this([])
+    {
+    }
+
+    public StreamSegmenter(IEnumerable<string> containerTags)
+    {
+        _containerTags = [.. containerTags];
     }
 
     // 已冻结的边界（绝对偏移）
@@ -391,6 +405,20 @@ internal sealed class StreamSegmenter
             _html = HtmlKind.Declaration;
             return true;
         }
+        foreach (var tag in _containerTags)
+        {
+            if (content.Length > tag.Length && content[1..].StartsWith(tag, StringComparison.OrdinalIgnoreCase))
+            {
+                var after = content.Length > tag.Length + 1 ? content[tag.Length + 1] : ' ';
+                if (after is ' ' or '\t' or '>' or '/')
+                {
+                    _html = HtmlKind.Container;
+                    _htmlRawTag = tag;
+                    _containerDepth = 0;
+                    return true;
+                }
+            }
+        }
         foreach (var tag in RawTags)
         {
             if (content.Length > tag.Length && content[1..].StartsWith(tag, StringComparison.OrdinalIgnoreCase))
@@ -416,8 +444,37 @@ internal sealed class StreamSegmenter
         HtmlKind.Declaration => line.Contains('>'),
         HtmlKind.CData => line.Contains("]]>", StringComparison.Ordinal),
         HtmlKind.Raw => line.Contains("</" + _htmlRawTag, StringComparison.OrdinalIgnoreCase),
+        HtmlKind.Container => ContainerEnds(line),
         _ => true,
     };
+
+    // 统计同名开 / 闭标签（不含行首的开始标签之前的状态），深度回到 0 以下时容器结束
+    private bool ContainerEnds(ReadOnlySpan<char> line)
+    {
+        var open = "<" + _htmlRawTag;
+        var close = "</" + _htmlRawTag;
+        for (var i = 0; i < line.Length; i++)
+        {
+            if (line[i] != '<')
+            {
+                continue;
+            }
+            var rest = line[i..];
+            if (rest.StartsWith(close, StringComparison.OrdinalIgnoreCase))
+            {
+                if (_containerDepth == 0)
+                {
+                    return true;
+                }
+                _containerDepth--;
+            }
+            else if (rest.StartsWith(open, StringComparison.OrdinalIgnoreCase) && rest.Length > open.Length && rest[open.Length] is ' ' or '>' or '\t')
+            {
+                _containerDepth++;
+            }
+        }
+        return false;
+    }
 
     private static int LeadingSpaces(ReadOnlySpan<char> line)
     {

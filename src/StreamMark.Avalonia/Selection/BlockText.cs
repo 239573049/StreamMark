@@ -18,11 +18,11 @@ public static class BlockText
     {
         public int Length => Content is not null ? Content.Text.Length : Raw?.Length ?? 0;
 
-        public string Slice(int start, int end)
+        public string Slice(int start, int end, Func<InlineObject, string?>? components = null)
         {
             if (Content is not null)
             {
-                return PlainText(Content, start, end);
+                return PlainText(Content, start, end, components);
             }
             var raw = Raw ?? "";
             return raw[Math.Clamp(start, 0, raw.Length)..Math.Clamp(end, 0, raw.Length)];
@@ -77,6 +77,17 @@ public static class BlockText
                     Collect(child, list, "");
                 }
                 break;
+            case ComponentBlock component:
+                // summary 在前（折叠块的标题），其余子块按顺序
+                foreach (var child in component.Children.Where(c => c is ComponentBlock { Name: "summary" }))
+                {
+                    Collect(child, list, "");
+                }
+                foreach (var child in component.Children.Where(c => c is not ComponentBlock { Name: "summary" }))
+                {
+                    Collect(child, list, "");
+                }
+                break;
             case CustomContainerBlock container:
                 foreach (var child in container.Children)
                 {
@@ -125,7 +136,8 @@ public static class BlockText
     }
 
     /// <summary>行内内容的纯文本：公式替换为 <c>$latex$</c>，图片替换为替代文字。</summary>
-    public static string PlainText(InlineContent content, int start = 0, int end = int.MaxValue)
+    /// <remarks><paramref name="components"/> 提供行内组件的纯文本（通常来自插件的 <c>ToPlainText</c>）；返回 null 时使用内置规则。</remarks>
+    public static string PlainText(InlineContent content, int start = 0, int end = int.MaxValue, Func<InlineObject, string?>? components = null)
     {
         end = Math.Min(end, content.Text.Length);
         if (content.Objects.IsEmpty)
@@ -151,6 +163,7 @@ public static class BlockText
                         InlineObjectKind.Math => obj.Flag ? $"$${obj.Value}$$" : $"${obj.Value}$",
                         InlineObjectKind.Image => obj.Alt ?? "",
                         InlineObjectKind.TaskCheckbox => obj.Flag ? "[x]" : "[ ]",
+                        InlineObjectKind.Component => components?.Invoke(obj) ?? (obj.Value == "citation" ? $"[{obj.Attributes["label"] ?? obj.Attributes["id"]}]" : ""),
                         _ => "",
                     });
                     continue;
