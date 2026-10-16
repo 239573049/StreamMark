@@ -29,10 +29,20 @@ public sealed class InlineStyleProbeTests
             var runs = cjk.Layout!.TextLines.SelectMany(l => l.TextRuns).OfType<global::Avalonia.Media.TextFormatting.ShapedTextRun>().ToList();
             var bold = runs.Single(r => r.Text.Span.ToString().Contains("粗体"));
             var regular = runs.First(r => r.Text.Span.ToString().Contains("中文"));
-            // 系统字体最粗只有中等字重（500）时也接受，只要比常规字重粗
-            Assert.True((int)bold.GlyphRun.GlyphTypeface.Weight > (int)regular.GlyphRun.GlyphTypeface.Weight || bold.GlyphRun.GlyphTypeface.FontSimulations.HasFlag(global::Avalonia.Media.FontSimulations.Bold),
-                $"bold CJK resolved to {bold.GlyphRun.GlyphTypeface.FamilyName}/{bold.GlyphRun.GlyphTypeface.Weight}");
-            Assert.True((int)regular.GlyphRun.GlyphTypeface.Weight < 500);
+            var boldFace = bold.GlyphRun.GlyphTypeface;
+            var regularFace = regular.GlyphRun.GlyphTypeface;
+            var heavier = (int)boldFace.Weight > (int)regularFace.Weight || boldFace.FontSimulations.HasFlag(global::Avalonia.Media.FontSimulations.Bold);
+            if (!heavier)
+            {
+                // 只有系统确实装有更粗的字重时才算失败（CI 镜像里的苹方可能只有一个字重）
+                // 按 600 / 700 / 800 / 900 逐个匹配（苹方按 700 匹配会落回常规字重），取最粗的
+                var available = new[] { 600, 700, 800, 900 }
+                    .Select(w => (int)new global::Avalonia.Media.Typeface(boldFace.FamilyName, global::Avalonia.Media.FontStyle.Normal, (global::Avalonia.Media.FontWeight)w).GlyphTypeface.Weight)
+                    .Max();
+                Assert.True(available <= (int)regularFace.Weight,
+                    $"bold CJK resolved to {boldFace.FamilyName}/{boldFace.Weight}, regular {regularFace.FamilyName}/{regularFace.Weight}, heaviest available {available}");
+            }
+            Assert.True((int)regular.GlyphRun.GlyphTypeface.Weight < 600);
             window.Close();
         });
     }
