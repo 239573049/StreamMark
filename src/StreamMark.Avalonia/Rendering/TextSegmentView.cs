@@ -159,7 +159,10 @@ public sealed class TextSegmentView : Control, ISelectableSegment
         }
         else
         {
-            _runCache.InvalidateFrom(from);
+            // 缓存以"段落"（换行符分隔）为单位、按段落起点存放整段的整形结果；InvalidateFrom 只丢弃起点不早于给定位置的条目。
+            // 所以必须从差异点所在段落的起点失效，否则旧段落（连同它的段落结束）被复用，追加的文字另起一段，变成硬换行
+            var paragraphStart = from > 0 ? content.Text.AsSpan(0, Math.Min(from, content.Text.Length)).LastIndexOfAny('\n', '\r', '\u2029') + 1 : 0;
+            _runCache.InvalidateFrom(paragraphStart);
         }
 #pragma warning restore CS0618
         _context = context;
