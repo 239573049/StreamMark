@@ -37,13 +37,13 @@ public sealed class IncrementalLayoutTests(ITestOutputHelper output)
                 live.ApplyLatest();
                 await HeadlessApp.Settle(1);
 
-                var streamed = Segment(live);
+                var streamed = await SettledSegment(live);
                 var reference = new MarkdownView { Markdown = text[..Math.Min(text.Length, i + 7)], Width = 360 };
                 var referenceWindow = new Window { Width = 400, Height = 800, Content = reference };
                 referenceWindow.Show();
                 reference.ApplyLatest();
                 await HeadlessApp.Settle(1);
-                var full = Segment(reference);
+                var full = await SettledSegment(reference);
                 // 尾部补全可能让流式内容与整篇解析不同：只比较内容相同的步骤
                 if (full.Content == streamed.Content)
                 {
@@ -88,7 +88,7 @@ public sealed class IncrementalLayoutTests(ITestOutputHelper output)
             referenceWindow.Show();
             reference.ApplyLatest();
             await HeadlessApp.Settle(1);
-            Assert.Equal(Breaks(Segment(reference)), Breaks(Segment(live)));
+            Assert.Equal(Breaks(await SettledSegment(reference)), Breaks(await SettledSegment(live)));
             referenceWindow.Close();
             window.Close();
         });
@@ -175,6 +175,18 @@ public sealed class IncrementalLayoutTests(ITestOutputHelper output)
     private static string Plain(string markdown) => markdown.Replace("**", "").Replace("`", "").Replace("*", "");
 
     private static TextSegmentView Segment(Control view) => view.GetVisualDescendants().OfType<TextSegmentView>().Last();
+
+    /// <summary>
+    /// 等到文本片段出现再取：进程里第一个测试冷启动时（CI 的 x64 Linux），一帧之内块视图可能还没建好。
+    /// </summary>
+    private static async Task<TextSegmentView> SettledSegment(Control view)
+    {
+        for (var i = 0; i < 50 && !view.GetVisualDescendants().OfType<TextSegmentView>().Any(); i++)
+        {
+            await HeadlessApp.Settle(1);
+        }
+        return Segment(view);
+    }
 
     private static IEnumerable<SegmentLineVisual> Lines(TextSegmentView segment) => segment.GetVisualChildren().OfType<SegmentLineVisual>();
 
