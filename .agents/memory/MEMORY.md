@@ -16,6 +16,7 @@
 - [原生库有两条分发路径](native-library-two-paths.md) — 交叉发布时复制错架构的来历
 - [RaTeX 的本地补丁应提交上游](ratex-fbox-upstream-patch.md) — 上游修复后要移除补丁并重新接线
 - [StreamPacer.GetRevealTime 还没有生产消费者](pacer-reveal-time-unwired.md) — 排查渐显不生效时的第一个怀疑对象
+- [回退字体曾依赖取 run 的起点与匹配历史](fallback-font-position-history.md) — Windows 上流式断行与整段排版不一致的原因（alpha.19 修复）
 - [差异视图正在加入（2026-10-16）](diff-view-in-flight.md) — 当前在飞的特性，以及它会收紧哪些不变量
 
 ## Reference

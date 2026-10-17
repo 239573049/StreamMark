@@ -58,6 +58,42 @@ public sealed class IncrementalLayoutTests(ITestOutputHelper output)
         });
     }
 
+    /// <summary>
+    /// 回退字体与取 run 的起点、匹配历史无关：逐行重排从行首取 run（"。禁则…"从"首"开始），
+    /// 而且 Avalonia 匹配过韩文后会把"。"也匹配到韩文字体；任何一处依赖起点或历史，流式结果都会与整段排版不同。
+    /// </summary>
+    [Theory]
+    [InlineData(161)]
+    [InlineData(238)]
+    [InlineData(271)]
+    public async Task StreamedMixedScripts_MatchFullLayout(double width)
+    {
+        await HeadlessApp.Run(async () =>
+        {
+            var paragraph = Plain(Paragraph).Replace("加上一些", "한국어로작성된문장과中文混排的句子没有空格한국어로작성된문장과中文混排的句子。加上一些");
+            var text = paragraph + paragraph;
+            var stream = new MarkdownStream(smooth: false);
+            var live = new MarkdownView { Stream = stream, Width = width };
+            var window = new Window { Width = width + 40, Height = 800, Content = live };
+            window.Show();
+            for (var i = 0; i < text.Length; i += 7)
+            {
+                stream.Push(text.Substring(i, Math.Min(7, text.Length - i)));
+                await stream.Document.WhenIdle();
+                live.ApplyLatest();
+                await HeadlessApp.Settle(1);
+            }
+            var reference = new MarkdownView { Markdown = text, Width = width };
+            var referenceWindow = new Window { Width = width + 40, Height = 800, Content = reference };
+            referenceWindow.Show();
+            reference.ApplyLatest();
+            await HeadlessApp.Settle(1);
+            Assert.Equal(Breaks(Segment(reference)), Breaks(Segment(live)));
+            referenceWindow.Close();
+            window.Close();
+        });
+    }
+
     [Fact]
     public async Task AppendCost_DoesNotGrowWithParagraphLength()
     {

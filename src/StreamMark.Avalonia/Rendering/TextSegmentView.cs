@@ -1,3 +1,5 @@
+using System.Buffers;
+using System.Collections.Concurrent;
 using System.Text;
 using Avalonia.Media.Fonts.Tables.Cmap;
 using Avalonia;
@@ -975,9 +977,14 @@ public sealed class TextSegmentView : Control, ISelectableSegment
                 return null;
             }
 
+            var begin = 0;
             var end = text.Length;
             foreach (var obj in _content.Objects)
             {
+                if (obj.Offset < textSourceIndex)
+                {
+                    begin = obj.Offset + 1;
+                }
                 if (obj.Offset == textSourceIndex)
                 {
                     return CreateObjectRun(obj);
@@ -996,6 +1003,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
             {
                 if (span.End <= textSourceIndex)
                 {
+                    begin = Math.Max(begin, span.End);
                     continue;
                 }
                 if (span.Start > textSourceIndex)
@@ -1003,6 +1011,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
                     end = Math.Min(end, span.Start);
                     break;
                 }
+                begin = Math.Max(begin, span.Start);
                 style = span.Style;
                 // 被链接策略禁止的链接显示为次要颜色的普通文字
                 if (span.LinkIndex >= 0 && style.HasFlag(InlineStyle.Link) && _owner.LinkDecisionFor(span.LinkIndex) == LinkDecision.Block)
@@ -1016,13 +1025,16 @@ public sealed class TextSegmentView : Control, ISelectableSegment
             }
 
             var properties = PropertiesFor(style, component, textStyle);
-            return CreateCharacters(text, textSourceIndex, end, properties, style, component, textStyle);
+            return CreateCharacters(text, begin, textSourceIndex, end, properties, style, component, textStyle);
         }
 
         // 回退字体：Avalonia 在为缺字的文字找回退字体时，会优先复用"上一段"的回退字体而不检查字重 / 字形，
         // 导致"中文 **粗体**"中的粗体沿用常规字重的回退字体（反之亦然）。这里自己按本段的字重、字形解析回退字体，
         // 让每段文字的主字体就能覆盖其字符，从而不进入那条复用路径。
-        private TextRun CreateCharacters(string text, int start, int end, TextRunProperties properties, InlineStyle style, int component, int textStyle)
+        // 回退字体按整段缺字文字的第一个字匹配，与从哪个位置开始取 run 无关：逐行排版会从行首重新取 run，
+        // 若按行首的字匹配（如"。"与"首"在 Windows 上可能匹配到不同字体），增量结果就会与整段排版不同。
+        // begin 是同一样式范围（span / 内嵌对象之间）的起点，向前找缺字段的起点不越过它。
+        private TextRun CreateCharacters(string text, int begin, int start, int end, TextRunProperties properties, InlineStyle style, int component, int textStyle)
         {
             var map = GlyphMap(properties);
             var first = Rune.GetRuneAt(text, start);
@@ -1038,8 +1050,18 @@ public sealed class TextSegmentView : Control, ISelectableSegment
                     }
                     length += rune.Utf16SequenceLength;
                 }
-                var typeface = properties.Typeface;
-                if (FontManager.Current.TryMatchCharacter(first.Value, typeface.Style, typeface.Weight, typeface.Stretch, typeface.FontFamily, null, out var fallback))
+                var head = first;
+                for (var i = start; i > begin;)
+                {
+                    if (Rune.DecodeLastFromUtf16(text.AsSpan(begin, i - begin), out var previous, out var consumed) != OperationStatus.Done
+                        || Covered(map, previous))
+                    {
+                        break;
+                    }
+                    head = previous;
+                    i -= consumed;
+                }
+                if (MatchFallback(head.Value, properties.Typeface) is { } fallback)
                 {
                     return new TextCharacters(text.AsMemory(start, length), FallbackProperties(properties, style, component, textStyle, fallback));
                 }
@@ -1058,6 +1080,14 @@ public sealed class TextSegmentView : Control, ISelectableSegment
             }
             return new TextCharacters(text.AsMemory(start, covered), properties);
         }
+
+        // Avalonia 匹配回退字体时优先复用之前匹配到的字体：同一个"。"在匹配过韩文之后会落到 Apple SD Gothic Neo 而不是苹方。
+        // 结果依赖进程内的匹配历史，会让先排的行与后来整段重排的行用不同字体。这里记住每个字第一次的结果，之后一律沿用。
+        private static readonly ConcurrentDictionary<(int, FontStyle, FontWeight, FontStretch, string), Typeface?> MatchedFallbacks = new();
+
+        private static Typeface? MatchFallback(int codepoint, Typeface typeface) =>
+            MatchedFallbacks.GetOrAdd((codepoint, typeface.Style, typeface.Weight, typeface.Stretch, typeface.FontFamily.Name), key =>
+                FontManager.Current.TryMatchCharacter(key.Item1, key.Item2, key.Item3, key.Item4, typeface.FontFamily, null, out var match) ? match : null);
 
         private static bool Covered(CharacterToGlyphMap? map, Rune rune) =>
             map is null || Rune.IsWhiteSpace(rune) || rune.Value < 0x20 || rune.Value == InlineObject.Placeholder || map.Value.ContainsGlyph(rune.Value);
