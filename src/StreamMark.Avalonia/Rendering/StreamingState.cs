@@ -9,6 +9,8 @@ public sealed class StreamingState
     private readonly object _lock = new();
     private readonly Queue<(long End, TimeSpan Time)> _reveals = new();
     private long _revealed;
+    // 已移出队列的批次的终点：队列第一批的起点
+    private long _trimmed;
 
     public StreamingState(TimeSpan fadeDuration)
     {
@@ -38,7 +40,7 @@ public sealed class StreamingState
             _reveals.Enqueue((_revealed, now));
             while (_reveals.Count > 0 && now - _reveals.Peek().Time > FadeDuration && _reveals.Count > 1)
             {
-                _reveals.Dequeue();
+                _trimmed = _reveals.Dequeue().End;
             }
         }
     }
@@ -49,6 +51,31 @@ public sealed class StreamingState
         {
             _reveals.Clear();
             _revealed = 0;
+            _trimmed = 0;
+        }
+    }
+
+    /// <summary>
+    /// 仍在渐显中的批次（从旧到新）：每批的起点距文本末尾的字符数、字符数与显示时间。
+    /// </summary>
+    internal void GetFadingBatches(TimeSpan now, List<(long FromEnd, int Length, TimeSpan Time)> result)
+    {
+        result.Clear();
+        if (!FadeEnabled)
+        {
+            return;
+        }
+        lock (_lock)
+        {
+            var previousEnd = _trimmed;
+            foreach (var (end, time) in _reveals)
+            {
+                if (now - time < FadeDuration)
+                {
+                    result.Add((_revealed - previousEnd, (int)(end - previousEnd), time));
+                }
+                previousEnd = end;
+            }
         }
     }
 
@@ -65,7 +92,7 @@ public sealed class StreamingState
         {
             long fadingFrom = -1;
             TimeSpan oldest = default, newest = default;
-            long previousEnd = 0;
+            var previousEnd = _trimmed;
             foreach (var (end, time) in _reveals)
             {
                 if (now - time < FadeDuration)

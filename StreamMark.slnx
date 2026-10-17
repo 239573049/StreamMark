@@ -13,6 +13,7 @@
   </Folder>
   <Folder Name="/bench/">
     <Project Path="bench/StreamMark.Benchmarks/StreamMark.Benchmarks.csproj" />
+    <Project Path="bench/StreamMark.CpuHarness/StreamMark.CpuHarness.csproj" />
   </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/StreamMark.Gallery/StreamMark.Gallery.csproj" />

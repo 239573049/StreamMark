@@ -52,7 +52,7 @@ StreamMark 是面向 AI 对话场景的高性能流式 Markdown 渲染库：Aval
 - `StreamingDocument.Append/Complete/Reset` 可在任意线程调用。
 - 解析在线程池上的单个逻辑工作者中执行；进行中有新文本只打脏标记，完成后再处理最新文本（中间版本跳过）。
 - `SnapshotReady` 在工作线程触发；`Latest` 任意线程可读。
-- `StreamPacer` 非线程安全，应在界面线程的动画帧回调中驱动。
+- `StreamPacer` 非线程安全，应在界面线程的动画帧回调中驱动：`MarkdownStream` 由显示它的视图交给窗口（`SetFrameSource`），之后随显示帧推进；未挂载或窗口不出帧时退回 16ms 计时器，保证流总能结束。
 
 ## NativeAOT
 
@@ -64,7 +64,8 @@ StreamMark 是面向 AI 对话场景的高性能流式 Markdown 渲染库：Aval
 
 | 组件 | 说明 |
 |---|---|
-| `TextSegmentView` | 一个文本片段 = 一个 `TextLayout`。自定义 `ITextSource` 提供行内样式；公式、图片、任务复选框是 `DrawableTextRun`（基线对齐）。选区只画矩形，不重新排版；删除线自绘；文档末尾片段绘制渐显蒙版与流式光标 |
+| `TextSegmentView` | 一个文本片段 = 一个 `SegmentLayout`（逐行的 `TextLine`，与 `TextLayout` 结果一致）。自定义 `ITextSource` 提供行内样式；公式、图片、任务复选框是 `DrawableTextRun`（基线对齐）。流式追加只从差异点所在行的前一行重新排版，每行一个 `SegmentLineVisual` 单独录制，所以只有变化的行重新录制、产生脏区。片段自身只画可命中区域、选区 / 查找高亮与流式光标；删除线随行自绘 |
+| `TailFade` | 文档末尾片段的逐字渐显，在渲染线程完成：界面线程在排版变化时把渐显中的字形与各批出现时间交给合成层的自定义视觉（`CompositionCustomVisualHandler`），所在行视觉用矩形裁掉渐显部分；之后每帧只由渲染线程重绘这一小块，界面线程不参与。渐显结束后恢复行的完整绘制 |
 | 块视图 | `TextBlockView`（段落 / 标题 / HTML）、`CodeBlockView`（逐行排版缓存 + 后台增量高亮 + 复制 / 换行）、`TableBlockView`（自定义列宽布局，不用 `Grid`）、`MathBlockView`（保留上一次成功排版）、`DiagramBlockView`（闭合后后台渲染、缓存、图表 / 源码切换）、列表 / 引用 / 提示块 / 容器 / 脚注 / 定义列表 |
 | `DocumentPresenter` | 把快照差异应用到顶层块视图：同类型复用，类型变化才替换 |
 | `MarkdownView` | 单文档、非虚拟化、高度随内容；`Markdown` / `Document` / `Stream` 三种输入 |

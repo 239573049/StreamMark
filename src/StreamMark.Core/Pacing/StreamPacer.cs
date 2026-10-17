@@ -115,6 +115,11 @@ public sealed class StreamPacer
             _rate = _rate == 0 ? instant : _rate * 0.8 + instant * 0.2;
         }
         _lastPush = now;
+        if (Backlog == 0)
+        {
+            // 空闲之后的第一帧：不能把空闲时长当作这一帧的间隔（否则会一次放出全部积压）
+            _lastTick = null;
+        }
         _pending.Append(text);
         _arrived += text.Length;
         _arrivals.Enqueue((_arrived, now));

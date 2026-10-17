@@ -165,6 +165,7 @@ public class MarkdownView : Control, ISelectionHost
             return;
         }
         _context ??= CreateContext();
+        Stream?.SetFrameSource(TopLevel.GetTopLevel(this));
         _presenter.Apply(document.Latest, _context);
     }
 
