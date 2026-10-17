@@ -35,6 +35,14 @@ internal sealed class ImageSlot : IDisposable
 
     public IImage? Image => _lease?.Image;
 
+    internal ImagePipeline? Pipeline => _pipeline;
+
+    /// <summary>当前图片是否按显示宽度缩小解码（小于原始尺寸）。</summary>
+    internal bool IsDownscaled => _lease is { } lease && lease.DecodedSize.Width < lease.PixelSize.Width;
+
+    /// <summary>为当前图片再取一个句柄（例如查看器打开期间保持缩小图可用）。</summary>
+    internal ImageLease? AcquireLease() => _lease?.AddRef();
+
     public bool IsLoading => Status is null && Url.Length > 0;
 
     /// <summary>确保按给定解码宽度加载；已有可用结果时不做任何事。</summary>

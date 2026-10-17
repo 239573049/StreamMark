@@ -34,15 +34,39 @@ public sealed class InlineStyleProbeTests
             var heavier = (int)boldFace.Weight > (int)regularFace.Weight || boldFace.FontSimulations.HasFlag(global::Avalonia.Media.FontSimulations.Bold);
             if (!heavier)
             {
-                // 只有系统确实装有更粗的字重时才算失败（CI 镜像里的苹方可能只有一个字重）
-                // 按 600 / 700 / 800 / 900 逐个匹配（苹方按 700 匹配会落回常规字重），取最粗的
-                var available = new[] { 600, 700, 800, 900 }
-                    .Select(w => (int)new global::Avalonia.Media.Typeface(boldFace.FamilyName, global::Avalonia.Media.FontStyle.Normal, (global::Avalonia.Media.FontWeight)w).GlyphTypeface.Weight)
-                    .Max();
+                // 只有系统确实装有更粗的字重时才算失败（CI 镜像里的苹方可能只有一个字重）。
+                // 列出真实字面而不是按字重取 GlyphTypeface：后者会触发合成粗体并复制整份字体
+                var available = new global::Avalonia.Media.FontFamily(boldFace.FamilyName).FamilyTypefaces.Select(f => (int)f.Weight).DefaultIfEmpty(0).Max();
                 Assert.True(available <= (int)regularFace.Weight,
                     $"bold CJK resolved to {boldFace.FamilyName}/{boldFace.Weight}, regular {regularFace.FamilyName}/{regularFace.Weight}, heaviest available {available}");
             }
             Assert.True((int)regular.GlyphRun.GlyphTypeface.Weight < 600);
+            window.Close();
+        });
+    }
+
+    [Fact]
+    public async Task FallbackRuns_UseRealFaces_NotSyntheticCopies()
+    {
+        await HeadlessApp.Run(async () =>
+        {
+            // 回归：回退字体缺少粗体 / 斜体字面时（Apple Color Emoji、苹方 700），不能让 Avalonia 合成字形——
+            // 合成会把整份字体文件复制进内存（Apple Color Emoji 约 600MB）
+            var view = new MarkdownView { Markdown = "### 🤝 贡献\n\n普通 😀 **粗体 😀 中文** *斜体 😀 中文* ***粗斜 😀***", Margin = new(16) };
+            var window = new Window { Width = 700, Height = 200, Content = view };
+            window.Show();
+            await HeadlessApp.Settle();
+            view.ApplyLatest();
+            await HeadlessApp.Settle();
+            var runs = global::Avalonia.VisualTree.VisualExtensions.GetVisualDescendants(view).OfType<TextSegmentView>()
+                .SelectMany(s => s.Layout!.TextLines).SelectMany(l => l.TextRuns).OfType<global::Avalonia.Media.TextFormatting.ShapedTextRun>().ToList();
+            Assert.NotEmpty(runs);
+            foreach (var run in runs)
+            {
+                var face = run.GlyphRun.GlyphTypeface;
+                Assert.True(face.FontSimulations == FontSimulations.None,
+                    $"'{run.Text.Span}' uses synthetic {face.FamilyName}/{face.Weight}/{face.Style} ({face.FontSimulations})");
+            }
             window.Close();
         });
     }

@@ -110,6 +110,60 @@ public sealed class ImageRenderingTests : IDisposable
     }
 
     [Fact]
+    public async Task DecodeDensity_ShrinksDocumentImage_ViewerLoadsOriginalAndEvictsOnClose()
+    {
+        await HeadlessApp.Run(async () =>
+        {
+            File.WriteAllBytes(Path.Combine(_workspace, "wide.png"), TestPng.Create(1600, 400, 22, 119, 255));
+            using var pipeline = new ImagePipeline(new()
+            {
+                Policy = ImagePolicy.Default with { AllowedFileRoots = [_workspace] },
+                DecodeDensity = 0.5,
+            });
+            var view = new MarkdownView { Margin = new(16) };
+            MarkdownServices.SetServices(view, new MarkdownServices { Images = pipeline });
+            MarkdownServices.SetImageBaseUri(view, _workspace);
+            view.Markdown = "![wide](wide.png)";
+            var window = new Window { Width = 720, Height = 400, Content = view };
+            window.Show();
+            view.ApplyLatest();
+            TextSegmentView? segment = null;
+            for (var i = 0; i < 200 && segment is null; i++)
+            {
+                await HeadlessApp.Settle();
+                await Task.Delay(10);
+                segment = view.GetVisualDescendants().OfType<TextSegmentView>().FirstOrDefault(s => s.LoadedImageCount == 1);
+            }
+            Assert.NotNull(segment);
+            var slot = Assert.Single(segment.ImageSlots);
+            var decoded = Assert.IsAssignableFrom<global::Avalonia.Media.Imaging.Bitmap>(slot.Image).PixelSize;
+            // 显示宽度约 688，密度 0.5 → 344 → 档位 512；保持原图宽高比 4:1
+            Assert.Equal(512, decoded.Width);
+            Assert.Equal(128, decoded.Height);
+            Assert.Equal(new global::Avalonia.PixelSize(1600, 400), slot.PixelSize);
+
+            // 查看器按原始尺寸打开并加载原图；关闭后原图移出缓存
+            var viewer = segment.ShowViewer(slot, slot.Image!, null);
+            Assert.NotNull(viewer);
+            ImageLease? original = null;
+            for (var i = 0; i < 200 && original is null; i++)
+            {
+                await HeadlessApp.Settle();
+                await Task.Delay(10);
+                original = pipeline.Memory.TryAcquire(slot.Url, 0);
+            }
+            Assert.NotNull(original);
+            Assert.Equal(1600, original.DecodedSize.Width);
+            original.Dispose();
+            viewer.Close();
+            Assert.Null(pipeline.Memory.TryAcquire(slot.Url, 0));
+            // 文档内的缩小图不受影响
+            Assert.NotNull(slot.Image);
+            window.Close();
+        });
+    }
+
+    [Fact]
     public async Task RelativeImage_WithoutBaseUri_FailsInsteadOfHanging()
     {
         await HeadlessApp.Run(async () =>

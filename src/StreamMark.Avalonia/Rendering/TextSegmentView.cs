@@ -446,6 +446,8 @@ public sealed class TextSegmentView : Control, ISelectableSegment
     /// <summary>加载失败或被策略拒绝的图片数（测试与诊断用）。</summary>
     internal int FailedImageCount => _images.Values.Count(s => s.Status is Images.ImageLoadStatus.Failed or Images.ImageLoadStatus.Blocked);
 
+    internal IReadOnlyCollection<ImageSlot> ImageSlots => _images.Values;
+
     internal IEnumerable<string> DescribeImages() => _images.Select(p => $"{p.Key} {p.Value.Status} {p.Value.Reason}");
 
     private readonly HashSet<string> _usedImages = [];
@@ -459,11 +461,70 @@ public sealed class TextSegmentView : Control, ISelectableSegment
             _images[resolved] = slot;
         }
         _usedImages.Add(resolved);
-        // 解码宽度：显示宽度 × 渲染缩放（Retina 为 2 倍），避免把大图原尺寸常驻内存
+        // 解码宽度：显示宽度 × 渲染缩放（Retina 为 2 倍），避免把大图原尺寸常驻内存；宿主可用解码密度上限进一步压缩
         var scaling = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1;
+        if (context.Services.Images.DecodeDensity is { } density)
+        {
+            scaling = Math.Min(scaling, density);
+        }
         var displayWidth = declared?.Width ?? (double.IsFinite(maxWidth) ? maxWidth : 1024);
         slot.Ensure(context.Services.Images, resolved, (int)Math.Ceiling(Math.Max(1, displayWidth) * scaling));
         return slot;
+    }
+
+    // 文档内是按显示宽度缩小解码的图：查看器按原始尺寸打开，先画缩小图，原图加载完成后替换；
+    // 关闭时把原图移出内存缓存，不让它常驻
+    internal ImageViewer? ShowViewer(ImageSlot slot, IImage loaded, string? caption)
+    {
+        var preview = slot.AcquireLease();
+        var natural = slot.PixelSize is { Width: > 0, Height: > 0 } pixels ? new Size(pixels.Width, pixels.Height) : loaded.Size;
+        var current = preview?.Image ?? loaded;
+        var viewer = ImageViewer.Show(this, natural, (context, rect) => context.DrawImage(current, new Rect(current.Size), rect), null, caption);
+        if (viewer is null)
+        {
+            preview?.Dispose();
+            return null;
+        }
+        Images.ImageLease? original = null;
+        var closed = false;
+        viewer.Closed += (_, _) =>
+        {
+            closed = true;
+            preview?.Dispose();
+            original?.Evict();
+            original?.Dispose();
+        };
+        if (slot.IsDownscaled && slot.Pipeline is { } pipeline)
+        {
+            LoadOriginal(pipeline, slot.Url);
+        }
+        return viewer;
+
+        async void LoadOriginal(Images.ImagePipeline pipeline, string url)
+        {
+            Images.ImageLoadResult result;
+            try
+            {
+                result = await pipeline.LoadAsync(url, 0);
+            }
+            catch (Exception)
+            {
+                return;
+            }
+            if (result.Lease is not { } lease)
+            {
+                return;
+            }
+            if (closed)
+            {
+                lease.Evict();
+                lease.Dispose();
+                return;
+            }
+            original = lease;
+            current = lease.Image;
+            viewer.InvalidateVisual();
+        }
     }
 
     private void ReleaseUnusedImages()
@@ -852,7 +913,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
                     RaiseEvent(args);
                     if (!args.Handled)
                     {
-                        ImageViewer.Show(this, loaded, imageObject?.Alt);
+                        ShowViewer(slot, loaded, imageObject?.Alt);
                     }
                     break;
             }
@@ -1021,37 +1082,44 @@ public sealed class TextSegmentView : Control, ISelectableSegment
             return map;
         }
 
-        // 粗体回退：系统字体可能没有 700 字重（如苹方只有中粗 600），而按 700 匹配会落回常规字重；
-        // 依次尝试邻近字重，取第一个真正够粗（不低于 600 或带合成粗体）的字形
-        private static Typeface HeavyEnough(FontFamily family, Typeface requested)
+        // 回退字体只用字体族里真实存在的字面。系统字体缺少所需字重或字形时（如苹方最粗只有中粗 600、
+        // Apple Color Emoji 只有常规体），Avalonia 会合成粗体 / 斜体，合成时把整份字体文件复制进内存并常驻
+        // （Apple Color Emoji 约 600MB）。所以不能用 GlyphTypeface 去试探不存在的字重：
+        // 粗体取不低于 500 的最粗真实字面，没有就用常规字重；没有对应字形的真实字面就用正体
+        private static Typeface RealFace(FontFamily family, Typeface requested)
         {
             var typeface = new Typeface(family, requested.Style, requested.Weight, requested.Stretch);
-            if ((int)requested.Weight < 600)
+            IReadOnlyList<Typeface> faces;
+            try
+            {
+                faces = family.FamilyTypefaces;
+            }
+            catch (Exception)
+            {
+                faces = [];
+            }
+            if (faces.Count == 0)
             {
                 return typeface;
             }
-            Typeface? medium = null;
-            foreach (var weight in new[] { (int)requested.Weight, 600, 800, 900, 500 })
+            var style = faces.Any(f => f.Style == requested.Style) ? requested.Style : FontStyle.Normal;
+            var weights = faces.Where(f => f.Style == style).Select(f => (int)f.Weight).ToList();
+            if (weights.Count == 0)
             {
-                var candidate = new Typeface(family, requested.Style, (FontWeight)weight, requested.Stretch);
-                try
-                {
-                    var glyphs = candidate.GlyphTypeface;
-                    if ((int)glyphs.Weight >= 600 || glyphs.FontSimulations.HasFlag(FontSimulations.Bold))
-                    {
-                        return candidate;
-                    }
-                    // 部分系统（如 CI 镜像里的苹方）最粗只有中等字重：没有更粗的就用它，总比常规字重好
-                    if ((int)glyphs.Weight >= 500)
-                    {
-                        medium ??= candidate;
-                    }
-                }
-                catch (Exception)
-                {
-                }
+                weights = faces.Select(f => (int)f.Weight).ToList();
             }
-            return medium ?? typeface;
+            int weight;
+            if ((int)requested.Weight >= 600)
+            {
+                // 优先离请求最近的不低于 600 的字重，其次最粗的中等字重（CI 镜像里的苹方可能只到 500）
+                var heavy = weights.Where(w => w >= 600).OrderBy(w => Math.Abs(w - (int)requested.Weight)).ThenByDescending(w => w).ToList();
+                weight = heavy.Count > 0 ? heavy[0] : weights.Where(w => w >= 500).DefaultIfEmpty(400).Max();
+            }
+            else
+            {
+                weight = weights.OrderBy(w => Math.Abs(w - (int)requested.Weight)).First();
+            }
+            return new Typeface(family, style, (FontWeight)weight, requested.Stretch);
         }
 
         private TextRunProperties FallbackProperties(TextRunProperties properties, InlineStyle style, int component, int textStyle, Typeface fallback)
@@ -1059,7 +1127,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
             var key = (style, component, textStyle, fallback.FontFamily.Name);
             if (!_fallbacks.TryGetValue(key, out var result))
             {
-                result = new GenericTextRunProperties(HeavyEnough(fallback.FontFamily, properties.Typeface),
+                result = new GenericTextRunProperties(RealFace(fallback.FontFamily, properties.Typeface),
                     properties.FontRenderingEmSize, properties.TextDecorations, properties.ForegroundBrush, properties.BackgroundBrush, properties.BaselineAlignment);
                 _fallbacks[key] = result;
             }

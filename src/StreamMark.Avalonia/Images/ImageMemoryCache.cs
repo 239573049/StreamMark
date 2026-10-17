@@ -29,6 +29,9 @@ public sealed class ImageLease : IDisposable
     /// <summary>规范化后的地址。</summary>
     public string Url => _entry.Url;
 
+    /// <summary>把这张解码图移出内存缓存，之后的请求不再命中（例如查看器临时加载的原图）；图片在最后一个句柄释放时释放。</summary>
+    public void Evict() => _entry.Owner.Evict(_entry);
+
     /// <summary>再取得一个独立的句柄（例如交给另一个视图）。</summary>
     public ImageLease AddRef()
     {
@@ -287,6 +290,19 @@ public sealed class ImageMemoryCache : IDisposable
             entry.Refs++;
             return new ImageLease(entry);
         }
+    }
+
+    internal void Evict(Entry entry)
+    {
+        List<IDisposable>? evicted = null;
+        lock (_gate)
+        {
+            if (!entry.Evicted)
+            {
+                RemoveLocked(entry, ref evicted);
+            }
+        }
+        DisposeAll(evicted);
     }
 
     internal void Release(Entry entry)

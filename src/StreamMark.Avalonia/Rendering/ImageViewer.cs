@@ -58,6 +58,7 @@ public sealed class ImageViewer : Control
 
     private OverlayLayer? _layer;
     private TopLevel? _topLevel;
+    private bool _closed;
 
     // 覆盖层（Canvas）不会拉伸子控件：始终按覆盖层大小设置自身尺寸并跟随变化。
     // 覆盖层第一次使用前可能还是 0×0（例如 AtomUI 窗口），此时先用窗口客户区大小
@@ -93,8 +94,16 @@ public sealed class ImageViewer : Control
         }
     }
 
+    /// <summary>查看器关闭时触发（只触发一次）。</summary>
+    public event EventHandler? Closed;
+
     public void Close()
     {
+        if (_closed)
+        {
+            return;
+        }
+        _closed = true;
         if (_layer is not null)
         {
             _layer.PropertyChanged -= OnLayerPropertyChanged;
@@ -107,6 +116,7 @@ public sealed class ImageViewer : Control
         {
             layer.Children.Remove(this);
         }
+        Closed?.Invoke(this, EventArgs.Empty);
     }
 
     private double FitScale
