@@ -74,9 +74,9 @@ public sealed class DiffRenderingTests
             Assert.True(diff.Bounds.Height < markdownHeight);
             HeadlessApp.Save(window, "diff-split");
 
-            // 复制：整块是原始 diff
+            // 复制：整块是原始 diff（Windows 检出时原始字符串字面量带 \r\n，渲染管线统一为 \n）
             view.SelectionController.SelectAll();
-            Assert.Equal(Diff, view.SelectionController.GetSelectedText());
+            Assert.Equal(Diff.Replace("\r\n", "\n"), view.SelectionController.GetSelectedText());
             window.Close();
         });
     }

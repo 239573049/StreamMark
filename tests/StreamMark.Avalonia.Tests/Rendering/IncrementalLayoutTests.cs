@@ -37,13 +37,13 @@ public sealed class IncrementalLayoutTests(ITestOutputHelper output)
                 live.ApplyLatest();
                 await HeadlessApp.Settle(1);
 
-                var streamed = Segment(live);
+                var streamed = await SettledSegment(live);
                 var reference = new MarkdownView { Markdown = text[..Math.Min(text.Length, i + 7)], Width = 360 };
                 var referenceWindow = new Window { Width = 400, Height = 800, Content = reference };
                 referenceWindow.Show();
                 reference.ApplyLatest();
                 await HeadlessApp.Settle(1);
-                var full = Segment(reference);
+                var full = await SettledSegment(reference);
                 // 尾部补全可能让流式内容与整篇解析不同：只比较内容相同的步骤
                 if (full.Content == streamed.Content)
                 {
@@ -54,6 +54,42 @@ public sealed class IncrementalLayoutTests(ITestOutputHelper output)
             }
             var steps = (text.Length + 6) / 7;
             Assert.True(compared >= (styled ? 5 : steps * 3 / 4), $"only {compared} of {steps} steps compared");
+            window.Close();
+        });
+    }
+
+    /// <summary>
+    /// 回退字体与取 run 的起点无关：逐行重排从行首取 run（"。禁则…"从"首"开始），按行首的字匹配回退字体时
+    /// （韩文与汉字连写，起点不同会落到不同字体）流式结果会与整段排版不同。
+    /// </summary>
+    [Theory]
+    [InlineData(161)]
+    [InlineData(238)]
+    [InlineData(271)]
+    public async Task StreamedMixedScripts_MatchFullLayout(double width)
+    {
+        await HeadlessApp.Run(async () =>
+        {
+            var paragraph = Plain(Paragraph).Replace("加上一些", "한국어로작성된문장과中文混排的句子没有空格한국어로작성된문장과中文混排的句子。加上一些");
+            var text = paragraph + paragraph;
+            var stream = new MarkdownStream(smooth: false);
+            var live = new MarkdownView { Stream = stream, Width = width };
+            var window = new Window { Width = width + 40, Height = 800, Content = live };
+            window.Show();
+            for (var i = 0; i < text.Length; i += 7)
+            {
+                stream.Push(text.Substring(i, Math.Min(7, text.Length - i)));
+                await stream.Document.WhenIdle();
+                live.ApplyLatest();
+                await HeadlessApp.Settle(1);
+            }
+            var reference = new MarkdownView { Markdown = text, Width = width };
+            var referenceWindow = new Window { Width = width + 40, Height = 800, Content = reference };
+            referenceWindow.Show();
+            reference.ApplyLatest();
+            await HeadlessApp.Settle(1);
+            Assert.Equal(Breaks(await SettledSegment(reference)), Breaks(await SettledSegment(live)));
+            referenceWindow.Close();
             window.Close();
         });
     }
@@ -139,6 +175,18 @@ public sealed class IncrementalLayoutTests(ITestOutputHelper output)
     private static string Plain(string markdown) => markdown.Replace("**", "").Replace("`", "").Replace("*", "");
 
     private static TextSegmentView Segment(Control view) => view.GetVisualDescendants().OfType<TextSegmentView>().Last();
+
+    /// <summary>
+    /// 等到文本片段出现再取：进程里第一个测试冷启动时（CI 的 x64 Linux），一帧之内块视图可能还没建好。
+    /// </summary>
+    private static async Task<TextSegmentView> SettledSegment(Control view)
+    {
+        for (var i = 0; i < 50 && !view.GetVisualDescendants().OfType<TextSegmentView>().Any(); i++)
+        {
+            await HeadlessApp.Settle(1);
+        }
+        return Segment(view);
+    }
 
     private static IEnumerable<SegmentLineVisual> Lines(TextSegmentView segment) => segment.GetVisualChildren().OfType<SegmentLineVisual>();
 

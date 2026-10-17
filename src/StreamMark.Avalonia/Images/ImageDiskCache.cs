@@ -39,6 +39,9 @@ public sealed class ImageDiskCacheEntry
     /// <summary>原始字节数。</summary>
     public long Size { get; set; }
 
+    /// <summary>缩略图条目：生成它时原图的版本（本地文件为大小与修改时间，远程为原图缓存条目的校验信息）；不一致即失效。</summary>
+    public string? SourceVersion { get; set; }
+
     /// <summary>是否带有可用于条件请求的校验器（ETag 或 Last-Modified）。</summary>
     [JsonIgnore]
     public bool HasValidators => !string.IsNullOrEmpty(ETag) || LastModified is not null;

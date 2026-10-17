@@ -1,3 +1,5 @@
+using System.Buffers;
+using System.Collections.Concurrent;
 using System.Text;
 using Avalonia.Media.Fonts.Tables.Cmap;
 using Avalonia;
@@ -446,6 +448,8 @@ public sealed class TextSegmentView : Control, ISelectableSegment
     /// <summary>加载失败或被策略拒绝的图片数（测试与诊断用）。</summary>
     internal int FailedImageCount => _images.Values.Count(s => s.Status is Images.ImageLoadStatus.Failed or Images.ImageLoadStatus.Blocked);
 
+    internal IReadOnlyCollection<ImageSlot> ImageSlots => _images.Values;
+
     internal IEnumerable<string> DescribeImages() => _images.Select(p => $"{p.Key} {p.Value.Status} {p.Value.Reason}");
 
     private readonly HashSet<string> _usedImages = [];
@@ -459,11 +463,70 @@ public sealed class TextSegmentView : Control, ISelectableSegment
             _images[resolved] = slot;
         }
         _usedImages.Add(resolved);
-        // 解码宽度：显示宽度 × 渲染缩放（Retina 为 2 倍），避免把大图原尺寸常驻内存
+        // 解码宽度：显示宽度 × 渲染缩放（Retina 为 2 倍），避免把大图原尺寸常驻内存；宿主可用解码密度上限进一步压缩
         var scaling = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1;
+        if (context.Services.Images.DecodeDensity is { } density)
+        {
+            scaling = Math.Min(scaling, density);
+        }
         var displayWidth = declared?.Width ?? (double.IsFinite(maxWidth) ? maxWidth : 1024);
         slot.Ensure(context.Services.Images, resolved, (int)Math.Ceiling(Math.Max(1, displayWidth) * scaling));
         return slot;
+    }
+
+    // 文档内是按显示宽度缩小解码的图：查看器按原始尺寸打开，先画缩小图，原图加载完成后替换；
+    // 关闭时把原图移出内存缓存，不让它常驻
+    internal ImageViewer? ShowViewer(ImageSlot slot, IImage loaded, string? caption)
+    {
+        var preview = slot.AcquireLease();
+        var natural = slot.PixelSize is { Width: > 0, Height: > 0 } pixels ? new Size(pixels.Width, pixels.Height) : loaded.Size;
+        var current = preview?.Image ?? loaded;
+        var viewer = ImageViewer.Show(this, natural, (context, rect) => context.DrawImage(current, new Rect(current.Size), rect), null, caption);
+        if (viewer is null)
+        {
+            preview?.Dispose();
+            return null;
+        }
+        Images.ImageLease? original = null;
+        var closed = false;
+        viewer.Closed += (_, _) =>
+        {
+            closed = true;
+            preview?.Dispose();
+            original?.Evict();
+            original?.Dispose();
+        };
+        if (slot.IsDownscaled && slot.Pipeline is { } pipeline)
+        {
+            LoadOriginal(pipeline, slot.Url);
+        }
+        return viewer;
+
+        async void LoadOriginal(Images.ImagePipeline pipeline, string url)
+        {
+            Images.ImageLoadResult result;
+            try
+            {
+                result = await pipeline.LoadAsync(url, 0);
+            }
+            catch (Exception)
+            {
+                return;
+            }
+            if (result.Lease is not { } lease)
+            {
+                return;
+            }
+            if (closed)
+            {
+                lease.Evict();
+                lease.Dispose();
+                return;
+            }
+            original = lease;
+            current = lease.Image;
+            viewer.InvalidateVisual();
+        }
     }
 
     private void ReleaseUnusedImages()
@@ -852,7 +915,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
                     RaiseEvent(args);
                     if (!args.Handled)
                     {
-                        ImageViewer.Show(this, loaded, imageObject?.Alt);
+                        ShowViewer(slot, loaded, imageObject?.Alt);
                     }
                     break;
             }
@@ -914,9 +977,14 @@ public sealed class TextSegmentView : Control, ISelectableSegment
                 return null;
             }
 
+            var begin = 0;
             var end = text.Length;
             foreach (var obj in _content.Objects)
             {
+                if (obj.Offset < textSourceIndex)
+                {
+                    begin = obj.Offset + 1;
+                }
                 if (obj.Offset == textSourceIndex)
                 {
                     return CreateObjectRun(obj);
@@ -935,6 +1003,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
             {
                 if (span.End <= textSourceIndex)
                 {
+                    begin = Math.Max(begin, span.End);
                     continue;
                 }
                 if (span.Start > textSourceIndex)
@@ -942,6 +1011,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
                     end = Math.Min(end, span.Start);
                     break;
                 }
+                begin = Math.Max(begin, span.Start);
                 style = span.Style;
                 // 被链接策略禁止的链接显示为次要颜色的普通文字
                 if (span.LinkIndex >= 0 && style.HasFlag(InlineStyle.Link) && _owner.LinkDecisionFor(span.LinkIndex) == LinkDecision.Block)
@@ -955,13 +1025,16 @@ public sealed class TextSegmentView : Control, ISelectableSegment
             }
 
             var properties = PropertiesFor(style, component, textStyle);
-            return CreateCharacters(text, textSourceIndex, end, properties, style, component, textStyle);
+            return CreateCharacters(text, begin, textSourceIndex, end, properties, style, component, textStyle);
         }
 
         // 回退字体：Avalonia 在为缺字的文字找回退字体时，会优先复用"上一段"的回退字体而不检查字重 / 字形，
         // 导致"中文 **粗体**"中的粗体沿用常规字重的回退字体（反之亦然）。这里自己按本段的字重、字形解析回退字体，
         // 让每段文字的主字体就能覆盖其字符，从而不进入那条复用路径。
-        private TextRun CreateCharacters(string text, int start, int end, TextRunProperties properties, InlineStyle style, int component, int textStyle)
+        // 回退字体按整段缺字文字的第一个字匹配，与从哪个位置开始取 run 无关：逐行排版会从行首重新取 run，
+        // 若按行首的字匹配（如"。"与"首"在 Windows 上可能匹配到不同字体），增量结果就会与整段排版不同。
+        // begin 是同一样式范围（span / 内嵌对象之间）的起点，向前找缺字段的起点不越过它。
+        private TextRun CreateCharacters(string text, int begin, int start, int end, TextRunProperties properties, InlineStyle style, int component, int textStyle)
         {
             var map = GlyphMap(properties);
             var first = Rune.GetRuneAt(text, start);
@@ -977,8 +1050,18 @@ public sealed class TextSegmentView : Control, ISelectableSegment
                     }
                     length += rune.Utf16SequenceLength;
                 }
-                var typeface = properties.Typeface;
-                if (FontManager.Current.TryMatchCharacter(first.Value, typeface.Style, typeface.Weight, typeface.Stretch, typeface.FontFamily, null, out var fallback))
+                var head = first;
+                for (var i = start; i > begin;)
+                {
+                    if (Rune.DecodeLastFromUtf16(text.AsSpan(begin, i - begin), out var previous, out var consumed) != OperationStatus.Done
+                        || Covered(map, previous))
+                    {
+                        break;
+                    }
+                    head = previous;
+                    i -= consumed;
+                }
+                if (MatchFallback(head.Value, properties.Typeface) is { } fallback)
                 {
                     return new TextCharacters(text.AsMemory(start, length), FallbackProperties(properties, style, component, textStyle, fallback));
                 }
@@ -997,6 +1080,14 @@ public sealed class TextSegmentView : Control, ISelectableSegment
             }
             return new TextCharacters(text.AsMemory(start, covered), properties);
         }
+
+        // Avalonia 匹配回退字体时优先复用之前匹配到的字体：同一个"。"在匹配过韩文之后会落到 Apple SD Gothic Neo 而不是苹方。
+        // 结果依赖进程内的匹配历史，会让先排的行与后来整段重排的行用不同字体。这里记住每个字第一次的结果，之后一律沿用。
+        private static readonly ConcurrentDictionary<(int, FontStyle, FontWeight, FontStretch, string), Typeface?> MatchedFallbacks = new();
+
+        private static Typeface? MatchFallback(int codepoint, Typeface typeface) =>
+            MatchedFallbacks.GetOrAdd((codepoint, typeface.Style, typeface.Weight, typeface.Stretch, typeface.FontFamily.Name), key =>
+                FontManager.Current.TryMatchCharacter(key.Item1, key.Item2, key.Item3, key.Item4, typeface.FontFamily, null, out var match) ? match : null);
 
         private static bool Covered(CharacterToGlyphMap? map, Rune rune) =>
             map is null || Rune.IsWhiteSpace(rune) || rune.Value < 0x20 || rune.Value == InlineObject.Placeholder || map.Value.ContainsGlyph(rune.Value);
@@ -1021,37 +1112,44 @@ public sealed class TextSegmentView : Control, ISelectableSegment
             return map;
         }
 
-        // 粗体回退：系统字体可能没有 700 字重（如苹方只有中粗 600），而按 700 匹配会落回常规字重；
-        // 依次尝试邻近字重，取第一个真正够粗（不低于 600 或带合成粗体）的字形
-        private static Typeface HeavyEnough(FontFamily family, Typeface requested)
+        // 回退字体只用字体族里真实存在的字面。系统字体缺少所需字重或字形时（如苹方最粗只有中粗 600、
+        // Apple Color Emoji 只有常规体），Avalonia 会合成粗体 / 斜体，合成时把整份字体文件复制进内存并常驻
+        // （Apple Color Emoji 约 600MB）。所以不能用 GlyphTypeface 去试探不存在的字重：
+        // 粗体取不低于 500 的最粗真实字面，没有就用常规字重；没有对应字形的真实字面就用正体
+        private static Typeface RealFace(FontFamily family, Typeface requested)
         {
             var typeface = new Typeface(family, requested.Style, requested.Weight, requested.Stretch);
-            if ((int)requested.Weight < 600)
+            IReadOnlyList<Typeface> faces;
+            try
+            {
+                faces = family.FamilyTypefaces;
+            }
+            catch (Exception)
+            {
+                faces = [];
+            }
+            if (faces.Count == 0)
             {
                 return typeface;
             }
-            Typeface? medium = null;
-            foreach (var weight in new[] { (int)requested.Weight, 600, 800, 900, 500 })
+            var style = faces.Any(f => f.Style == requested.Style) ? requested.Style : FontStyle.Normal;
+            var weights = faces.Where(f => f.Style == style).Select(f => (int)f.Weight).ToList();
+            if (weights.Count == 0)
             {
-                var candidate = new Typeface(family, requested.Style, (FontWeight)weight, requested.Stretch);
-                try
-                {
-                    var glyphs = candidate.GlyphTypeface;
-                    if ((int)glyphs.Weight >= 600 || glyphs.FontSimulations.HasFlag(FontSimulations.Bold))
-                    {
-                        return candidate;
-                    }
-                    // 部分系统（如 CI 镜像里的苹方）最粗只有中等字重：没有更粗的就用它，总比常规字重好
-                    if ((int)glyphs.Weight >= 500)
-                    {
-                        medium ??= candidate;
-                    }
-                }
-                catch (Exception)
-                {
-                }
+                weights = faces.Select(f => (int)f.Weight).ToList();
             }
-            return medium ?? typeface;
+            int weight;
+            if ((int)requested.Weight >= 600)
+            {
+                // 优先离请求最近的不低于 600 的字重，其次最粗的中等字重（CI 镜像里的苹方可能只到 500）
+                var heavy = weights.Where(w => w >= 600).OrderBy(w => Math.Abs(w - (int)requested.Weight)).ThenByDescending(w => w).ToList();
+                weight = heavy.Count > 0 ? heavy[0] : weights.Where(w => w >= 500).DefaultIfEmpty(400).Max();
+            }
+            else
+            {
+                weight = weights.OrderBy(w => Math.Abs(w - (int)requested.Weight)).First();
+            }
+            return new Typeface(family, style, (FontWeight)weight, requested.Stretch);
         }
 
         private TextRunProperties FallbackProperties(TextRunProperties properties, InlineStyle style, int component, int textStyle, Typeface fallback)
@@ -1059,7 +1157,7 @@ public sealed class TextSegmentView : Control, ISelectableSegment
             var key = (style, component, textStyle, fallback.FontFamily.Name);
             if (!_fallbacks.TryGetValue(key, out var result))
             {
-                result = new GenericTextRunProperties(HeavyEnough(fallback.FontFamily, properties.Typeface),
+                result = new GenericTextRunProperties(RealFace(fallback.FontFamily, properties.Typeface),
                     properties.FontRenderingEmSize, properties.TextDecorations, properties.ForegroundBrush, properties.BackgroundBrush, properties.BaselineAlignment);
                 _fallbacks[key] = result;
             }

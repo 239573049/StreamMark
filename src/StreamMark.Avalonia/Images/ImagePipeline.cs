@@ -32,6 +32,30 @@ public sealed record ImagePipelineOptions
 
     /// <summary>SVG 栅格化器（例如 StreamMark.Mermaid 的 <c>SvgImageRasterizer</c>）；null 表示不支持 SVG。</summary>
     public ISvgRasterizer? SvgRasterizer { get; init; }
+
+    /// <summary>
+    /// 文档内图片的解码密度上限：每个逻辑像素最多解码多少物理像素（之后可通过 <see cref="ImagePipeline.DecodeDensity"/> 修改）。
+    /// null 表示按窗口渲染缩放解码（Retina 上为 2，最清晰）；1 表示按逻辑尺寸解码，Retina 上内存约为 1/4，画面略软。
+    /// 只影响文档内显示，点击图片打开的查看器始终加载原图。
+    /// </summary>
+    public double? DecodeDensity { get; init; }
+
+    /// <summary>
+    /// 磁盘缩略图：按宽度档位缩小解码（或栅格化 SVG）后，把结果编码存进磁盘缓存，再次打开时直接读缩略图，
+    /// 不再解码原图（避免整张原图解码的内存峰值与耗时）。需要 <see cref="DiskCacheDirectory"/>；默认开启。
+    /// 本地文件按大小与修改时间、远程图片按原图缓存条目判断缩略图是否失效。
+    /// </summary>
+    public bool DiskThumbnails { get; init; } = true;
+
+    /// <summary>缩略图编码器（例如 StreamMark.Mermaid 的 WebP 编码器）；null 表示用 Avalonia 编码为 PNG。</summary>
+    public IImageEncoder? ThumbnailEncoder { get; init; }
+}
+
+/// <summary>把解码后的位图编码为可存盘的字节（在线程池上调用，必须线程安全）。</summary>
+public interface IImageEncoder
+{
+    /// <summary>编码；失败返回 null（该缩略图不落盘）。</summary>
+    byte[]? Encode(global::Avalonia.Media.Imaging.Bitmap bitmap);
 }
 
 /// <summary>把 SVG 字节栅格化为位图（在线程池上调用，必须线程安全）。</summary>
@@ -58,14 +82,18 @@ public sealed class ImagePipeline : IDisposable
     private readonly List<IImageFetcher> _fetchers;
     private readonly HttpsFetcher _https;
     private readonly ISvgRasterizer? _svg;
+    private readonly bool _thumbnails;
+    private readonly IImageEncoder? _thumbnailEncoder;
     private readonly CancellationTokenSource _lifetime = new();
     private volatile ImagePolicy _policy;
+    private double _decodeDensity; // 0 表示未设置
     private long _networkRequests;
     private long _memoryHits;
     private long _diskHits;
     private long _revalidations;
     private long _notModified;
     private long _decodes;
+    private long _thumbnailHits;
     private int _disposed;
 
     public ImagePipeline(ImagePipelineOptions? options = null)
@@ -81,6 +109,17 @@ public sealed class ImagePipeline : IDisposable
         _https = options.HttpHandler is { } handler ? new HttpsFetcher(handler, disposeHandler: false) : new HttpsFetcher();
         _fetchers = [.. options.Fetchers, new DataUriFetcher(), _https, new FileFetcher()];
         _svg = options.SvgRasterizer;
+        _thumbnails = options.DiskThumbnails && Disk is not null;
+        _thumbnailEncoder = options.ThumbnailEncoder;
+        DecodeDensity = options.DecodeDensity;
+    }
+
+    /// <summary>文档内图片的解码密度上限（见 <see cref="ImagePipelineOptions.DecodeDensity"/>）。修改后对之后排版的图片生效。</summary>
+    public double? DecodeDensity
+    {
+        get => _decodeDensity > 0 ? _decodeDensity : null;
+        set => _decodeDensity = value is not { } density ? 0
+            : double.IsFinite(density) && density > 0 ? density : throw new ArgumentOutOfRangeException(nameof(value));
     }
 
     /// <summary>当前策略。可随时替换（例如设置页修改），对之后的请求生效。</summary>
@@ -102,6 +141,7 @@ public sealed class ImagePipeline : IDisposable
     internal long Revalidations => Interlocked.Read(ref _revalidations);
     internal long NotModifiedCount => Interlocked.Read(ref _notModified);
     internal long Decodes => Interlocked.Read(ref _decodes);
+    internal long ThumbnailHits => Interlocked.Read(ref _thumbnailHits);
 
     /// <summary>用户同意加载该域名的图片（<see cref="ImagePolicy.AutoLoad"/> = false 时）。</summary>
     public void Approve(string host)
@@ -329,6 +369,10 @@ public sealed class ImagePipeline : IDisposable
 
     private async Task<CoreResult> LoadCoreAsync(string url, int bucket, ImageFetchRequest request, IImageFetcher fetcher)
     {
+        if (bucket > 0 && await TryLoadThumbnailAsync(url, bucket, request, fetcher).ConfigureAwait(false) is { } thumbnail)
+        {
+            return thumbnail;
+        }
         var bytes = await GetBytesAsync(request, fetcher).ConfigureAwait(false);
         if (bytes.Status != ImageFetchStatus.Ok)
         {
@@ -378,7 +422,107 @@ public sealed class ImagePipeline : IDisposable
             bucket = 0;
         }
         var lease = Memory.Add(url, bucket, bitmap, decoded, natural);
+        if (bucket > 0 && SourceVersion(url, request, fetcher) is { } version)
+        {
+            // 落盘不阻塞显示；编码期间位图由这个额外句柄保持可用
+            var hold = lease.AddRef();
+            _ = Task.Run(() => WriteThumbnailAsync(url, bucket, hold, natural, version));
+        }
         return new CoreResult(ImageLoadStatus.Loaded, lease, null);
+    }
+
+    private static string ThumbnailKey(string url, int bucket) => "thumbnail:" + bucket + ":" + url;
+
+    /// <summary>
+    /// 原图的版本（缩略图失效依据）；不能确定时返回 null（不使用缩略图）。
+    /// 本地文件先按策略解析出允许的路径，因此缩略图不会绕过 <see cref="ImagePolicy.AllowedFileRoots"/>。
+    /// </summary>
+    private string? SourceVersion(string url, ImageFetchRequest request, IImageFetcher fetcher)
+    {
+        if (!_thumbnails || request.Uri is not { } uri)
+        {
+            return null;
+        }
+        try
+        {
+            if (fetcher is FileFetcher)
+            {
+                var path = FileFetcher.ResolveAllowedPath(uri.LocalPath, request.Policy.AllowedFileRoots);
+                var info = path is null ? null : new FileInfo(path);
+                return info is { Exists: true } ? $"file:{info.Length}:{info.LastWriteTimeUtc.Ticks}" : null;
+            }
+            // 远程图片：原图缓存条目新鲜时才使用缩略图（过期则先走重新验证）
+            if (fetcher.IsRemote && Disk!.TryGetEntry(url, out var entry) && Disk.IsFresh(entry))
+            {
+                return $"remote:{entry.Size}:{entry.ETag}:{entry.LastModified?.UtcTicks}";
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+        return null;
+    }
+
+    private async Task<CoreResult?> TryLoadThumbnailAsync(string url, int bucket, ImageFetchRequest request, IImageFetcher fetcher)
+    {
+        if (SourceVersion(url, request, fetcher) is not { } version)
+        {
+            return null;
+        }
+        var hit = await Disk!.TryReadAsync(ThumbnailKey(url, bucket), _lifetime.Token).ConfigureAwait(false);
+        if (hit is null || hit.Entry.SourceVersion != version || hit.Entry.PixelWidth <= 0 || hit.Entry.PixelHeight <= 0)
+        {
+            return null;
+        }
+        global::Avalonia.Media.Imaging.Bitmap bitmap;
+        try
+        {
+            using var stream = new MemoryStream(hit.Data, writable: false);
+            bitmap = new global::Avalonia.Media.Imaging.Bitmap(stream);
+        }
+        catch (Exception)
+        {
+            await Disk.RemoveAsync(ThumbnailKey(url, bucket)).ConfigureAwait(false);
+            return null;
+        }
+        Interlocked.Increment(ref _thumbnailHits);
+        var natural = new PixelSize(hit.Entry.PixelWidth, hit.Entry.PixelHeight);
+        return new CoreResult(ImageLoadStatus.Loaded, Memory.Add(url, bucket, bitmap, bitmap.PixelSize, natural), null);
+    }
+
+    private async Task WriteThumbnailAsync(string url, int bucket, ImageLease lease, PixelSize natural, string version)
+    {
+        try
+        {
+            if (lease.Image is not global::Avalonia.Media.Imaging.Bitmap bitmap)
+            {
+                return;
+            }
+            byte[]? data;
+            if (_thumbnailEncoder is { } encoder)
+            {
+                data = encoder.Encode(bitmap);
+            }
+            else
+            {
+                using var output = new MemoryStream();
+                bitmap.Save(output, new global::Avalonia.Media.Imaging.PngBitmapEncoderOptions());
+                data = output.ToArray();
+            }
+            if (data is { Length: > 0 })
+            {
+                var entry = new ImageDiskCacheEntry { SourceVersion = version, PixelWidth = natural.Width, PixelHeight = natural.Height };
+                await Disk!.WriteAsync(ThumbnailKey(url, bucket), data, entry, _lifetime.Token).ConfigureAwait(false);
+            }
+        }
+        catch (Exception)
+        {
+            // 缩略图只是加速，失败不影响显示
+        }
+        finally
+        {
+            lease.Dispose();
+        }
     }
 
     /// <summary>取得原始字节；同一地址的并发请求（不同档位）共享一次获取。</summary>

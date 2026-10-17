@@ -35,6 +35,108 @@ public sealed class ImagePipelineTests : IDisposable
         Assert.NotNull(result.Lease!.Image);
     }
 
+    private async Task<ImageDiskCacheEntry> WaitForThumbnailAsync(ImagePipeline pipeline, string url, int bucket)
+    {
+        // 缩略图在后台写入
+        for (var i = 0; i < 200; i++)
+        {
+            if (pipeline.Disk!.TryGetEntry($"thumbnail:{bucket}:{new Uri(url).AbsoluteUri}", out var entry))
+            {
+                return entry;
+            }
+            await Task.Delay(10);
+        }
+        throw new TimeoutException("thumbnail was not written");
+    }
+
+    [Fact]
+    public Task Local_file_thumbnail_is_reused_until_the_file_changes() => HeadlessApp.Run(async () =>
+    {
+        var root = Path.Combine(_temp.Path, "work");
+        Directory.CreateDirectory(root);
+        var file = Path.Combine(root, "wide.png");
+        File.WriteAllBytes(file, TestPng.Create(1600, 400, 22, 119, 255));
+        var url = new Uri(file).AbsoluteUri;
+        var policy = ImagePolicy.Default with { AllowedFileRoots = [root] };
+        ImagePipeline Pipeline(IImageEncoder? encoder = null) => new(new ImagePipelineOptions
+        {
+            Policy = policy,
+            DiskCacheDirectory = Path.Combine(_temp.Path, "cache"),
+            ThumbnailEncoder = encoder,
+        });
+
+        using (var first = Pipeline(new StreamMark.Mermaid.WebPImageEncoder()))
+        {
+            using var result = await first.LoadAsync(url, 400);
+            AssertLoaded(result, 1600, 400);
+            Assert.Equal(512, result.Lease!.DecodedSize.Width);
+            Assert.Equal(1, first.Decodes);
+            var entry = await WaitForThumbnailAsync(first, url, 512);
+            Assert.Equal(1600, entry.PixelWidth);
+            // WebP 文件头：RIFF....WEBP
+            var bytes = (await first.Disk!.TryReadAsync(entry.Url))!.Data;
+            Assert.Equal("WEBP", System.Text.Encoding.ASCII.GetString(bytes, 8, 4));
+            await first.Disk.WhenIdleAsync();
+        }
+
+        using (var second = Pipeline())
+        {
+            using var result = await second.LoadAsync(url, 400);
+            AssertLoaded(result, 1600, 400);
+            Assert.Equal(512, result.Lease!.DecodedSize.Width);
+            Assert.Equal(128, result.Lease.DecodedSize.Height);
+            Assert.Equal(1, second.ThumbnailHits);
+            Assert.Equal(0, second.Decodes);
+            // 查看原图不走缩略图
+            using var original = await second.LoadAsync(url, 0);
+            Assert.Equal(1600, original.Lease!.DecodedSize.Width);
+        }
+
+        // 文件被修改：缩略图失效，重新解码原图
+        File.WriteAllBytes(file, TestPng.Create(1600, 800, 200, 40, 40));
+        File.SetLastWriteTimeUtc(file, DateTime.UtcNow.AddMinutes(1));
+        using (var third = Pipeline())
+        {
+            using var result = await third.LoadAsync(url, 400);
+            AssertLoaded(result, 1600, 800);
+            Assert.Equal(0, third.ThumbnailHits);
+            Assert.Equal(1, third.Decodes);
+        }
+
+        // 缩略图不能绕过本地目录策略
+        using (var blocked = new ImagePipeline(new ImagePipelineOptions
+        {
+            Policy = ImagePolicy.Default with { AllowedFileRoots = [Path.Combine(_temp.Path, "other")] },
+            DiskCacheDirectory = Path.Combine(_temp.Path, "cache"),
+        }))
+        {
+            Assert.Equal(ImageLoadStatus.Blocked, (await blocked.LoadAsync(url, 400)).Status);
+            Assert.Equal(0, blocked.ThumbnailHits);
+        }
+    });
+
+    [Fact]
+    public Task Remote_thumbnail_is_used_while_the_original_entry_is_fresh() => HeadlessApp.Run(async () =>
+    {
+        _server.MapImage("big.png", TestPng.Create(1200, 300));
+        var url = _server.Url("big.png");
+        using (var first = NewPipeline())
+        {
+            using var result = await first.LoadAsync(url, 300);
+            AssertLoaded(result, 1200, 300);
+            await WaitForThumbnailAsync(first, url, 512);
+        }
+        using (var second = NewPipeline())
+        {
+            using var result = await second.LoadAsync(url, 300);
+            AssertLoaded(result, 1200, 300);
+            Assert.Equal(512, result.Lease!.DecodedSize.Width);
+            Assert.Equal(1, second.ThumbnailHits);
+            Assert.Equal(0, second.Decodes);
+            Assert.Equal(0, second.NetworkRequests);
+        }
+    });
+
     [Fact]
     public Task Network_then_memory_then_disk_across_pipelines() => HeadlessApp.Run(async () =>
     {
