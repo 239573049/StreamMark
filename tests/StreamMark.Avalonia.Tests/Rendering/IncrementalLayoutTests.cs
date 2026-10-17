@@ -59,8 +59,8 @@ public sealed class IncrementalLayoutTests(ITestOutputHelper output)
     }
 
     /// <summary>
-    /// 回退字体与取 run 的起点、匹配历史无关：逐行重排从行首取 run（"。禁则…"从"首"开始），
-    /// 而且 Avalonia 匹配过韩文后会把"。"也匹配到韩文字体；任何一处依赖起点或历史，流式结果都会与整段排版不同。
+    /// 回退字体与取 run 的起点无关：逐行重排从行首取 run（"。禁则…"从"首"开始），按行首的字匹配回退字体时
+    /// （韩文与汉字连写，起点不同会落到不同字体）流式结果会与整段排版不同。
     /// </summary>
     [Theory]
     [InlineData(161)]

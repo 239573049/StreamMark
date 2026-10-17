@@ -34,14 +34,13 @@ public sealed class InlineStyleProbeTests
             var heavier = (int)boldFace.Weight > (int)regularFace.Weight || boldFace.FontSimulations.HasFlag(global::Avalonia.Media.FontSimulations.Bold);
             if (!heavier)
             {
-                // 只有系统确实能加载更粗的字重时才算失败。CI 镜像里的苹方在 FamilyTypefaces 里列出 600，
-                // 实际按 600 加载得到的却是 Medium，所以按列出的最粗字重真正加载一次，看拿到的真实字面（测试里探测一次可以接受）
-                var family = new global::Avalonia.Media.FontFamily(boldFace.FamilyName);
-                var available = family.FamilyTypefaces.Select(f => (int)f.Weight).DefaultIfEmpty(0).Max();
-                var probe = new Typeface(family, FontStyle.Normal, (FontWeight)available).GlyphTypeface;
-                var loadable = probe.FontSimulations == FontSimulations.None ? (int)probe.Weight : 0;
-                Assert.True(loadable <= (int)regularFace.Weight,
-                    $"bold CJK resolved to {boldFace.FamilyName}/{boldFace.Weight}, regular {regularFace.FamilyName}/{regularFace.Weight}, heaviest loadable {loadable} (listed {available})");
+                // 只有系统确实装有更粗的字重时才算失败。列出真实字面而不是按字重取 GlyphTypeface：后者会触发合成粗体并复制整份字体，
+                // 还会污染 Avalonia 的字体缓存，让后面的测试拿到合成字形。
+                // CI 镜像里的苹方在 FamilyTypefaces 里列出 600，加载到的却是 Medium：连常规字重都已解析成 Medium 以上，
+                // 说明这个镜像上粗 / 常规无法区分，没有可比较的字重
+                var available = new global::Avalonia.Media.FontFamily(boldFace.FamilyName).FamilyTypefaces.Select(f => (int)f.Weight).DefaultIfEmpty(0).Max();
+                Assert.True(available <= (int)regularFace.Weight || (int)regularFace.Weight >= (int)FontWeight.Medium,
+                    $"bold CJK resolved to {boldFace.FamilyName}/{boldFace.Weight}, regular {regularFace.FamilyName}/{regularFace.Weight}, heaviest available {available}");
             }
             Assert.True((int)regular.GlyphRun.GlyphTypeface.Weight < 600);
             window.Close();
